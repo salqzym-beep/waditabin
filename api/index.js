@@ -97,7 +97,8 @@ export default async function handler(req,res) {
       return json(res,200,{ok:true,user:cleanUser(user)});
     }
     if(action==='logout') {
-      res.setHeader('Set-Cookie','wtn_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0');
+      res.setHeader('Set-Cookie',['wtn_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0','wtn_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Expires=Thu, 01 Jan 1970 00:00:00 GMT']);
+      res.setHeader('Cache-Control','no-store');
       return json(res,200,{ok:true});
     }
     if(action==='signup') {
@@ -122,7 +123,7 @@ export default async function handler(req,res) {
     if(action==='portal-data') {
       const user=state.users.find(x=>x.id===current.id);
       if(!user)return json(res,404,{error:'الحساب غير موجود'});
-      return json(res,200,{ok:true,user:cleanUser(user),state:{packages:state.packages,cards:state.cards.filter(c=>c.ownerId===user.id),transactions:state.transactions.filter(t=>t.userId===user.id)}});
+      return json(res,200,{ok:true,user:cleanUser(user),state:{packages:state.packages,cards:state.cards.filter(c=>c.ownerId===user.id),transactions:state.transactions.filter(t=>t.userId===user.id).sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)))}});
     }
     if(action==='admin-action'&&current.role==='admin') {
       const operation=safe(body.operation);
@@ -221,8 +222,8 @@ export default async function handler(req,res) {
       await save(state); return json(res,200,{ok:true,card:{code:card.code},balance:user.balance});
     }
     if(action==='merchant-sale') {
-      if(current.role!=='merchant')return json(res,403,{error:'هذه العملية للتجار فقط'});
       const user=state.users.find(x=>x.id===current.id);
+      if(!user||user.role!=='merchant')return json(res,403,{error:'هذا الحساب غير مفعّل كتاجر. حدّث الصفحة بعد تعديل نوع الحساب من لوحة المدير.'});
       const customerName=safe(body.customerName), phone=safe(body.phone), packageId=safe(body.packageId);
       const pkg=state.packages.find(x=>x.id===packageId&&x.active!==false);
       const card=state.cards.find(c=>c.packageId===packageId&&c.status==='available');
