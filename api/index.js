@@ -173,39 +173,44 @@ export default async function handler(req,res) {
         const buffer=Buffer.from(b64,'base64');
         if(buffer.subarray(0,5).toString()!=='%PDF-')return json(res,400,{error:'الملف المرفوع ليس PDF صالحاً'});
         const parsed=await pdf(buffer);
-        const raw=String(parsed.text||'').replace(/\u0000/g,' ');
-        const lines=raw.split(/[\r\n]+/).map(x=>x.trim()).filter(Boolean);
-        const candidates=[];
-        for(const line of lines){
-          const cleaned=line.replace(/^\s*(?:\d+[.)-]?\s*)/,'').trim();
-          if(/^(?:page\s+\d+|صفحة\s+\d+)$/i.test(cleaned))continue;
-          const tokens=cleaned.match(/[A-Za-z0-9][A-Za-z0-9_-]{3,39}/g)||[];
-          if(tokens.length===1)candidates.push(tokens[0]);
-          else if(tokens.length===2 && /^[A-Za-z0-9_-]{4,40}$/.test(tokens[0]) && /^[A-Za-z0-9_-]{4,40}$/.test(tokens[1]))candidates.push(tokens.join(' '));
+        const raw=String(parsed?.text||'').replace(/\u0000/g,' ');
+        if(!raw.trim())return json(res,422,{error:'لم أجد نصاً قابلاً للاستخراج في PDF. إذا كان الملف صوراً ممسوحة ضوئياً فسيحتاج OCR.'});
+        const normalized=raw.replace(/[٠-٩]/g,d=>'٠١٢٣٤٥٦٧٨٩'.indexOf(d)).replace(/[\u200e\u200f]/g,' ');
+        const found=[];
+        for(const line of normalized.split(/[\r\n]+/)){
+          const clean=line.trim();
+          if(!clean||/^(?:page\s*\d+|صفحة\s*\d+)$/i.test(clean))continue;
+          const matches=clean.match(/[A-Za-z0-9][A-Za-z0-9_-]{5,39}/g)||[];
+          for(const token of matches){
+            if(/^\d{4}$/.test(token))continue;
+            found.push(token);
+          }
         }
-        const unique=[...new Set(candidates)];
-        const seen=new Set(state.cards.map(c=>c.code));
-        const newCodes=unique.filter(code=>!seen.has(code));
-        return json(res,200,{ok:true,preview:true,packageId:pkg.id,packageName:pkg.name,total:unique.length,duplicates:unique.length-newCodes.length,codes:newCodes.slice(0,3000),message:'راجع الأكواد المستخرجة قبل اعتمادها'});
+        const unique=[...new Map(found.map(code=>[code.toUpperCase(),code])).values()];
+        const seen=new Set(state.cards.map(c=>String(c.code).toUpperCase()));
+        const freshCodes=unique.filter(code=>!seen.has(code.toUpperCase()));
+        return json(res,200,{ok:true,preview:true,packageId:pkg.id,packageName:pkg.name,total:unique.length,duplicates:unique.length-freshCodes.length,codes:freshCodes.slice(0,3000),message:'راجع الأكواد المستخرجة قبل اعتمادها'});
       }
       if(operation==='stock-pdf-confirm') {
         const pkg=state.packages.find(x=>x.id===body.packageId);
         if(!pkg)return json(res,400,{error:'الباقة غير موجودة'});
         const codes=Array.isArray(body.codes)?body.codes.map(safe).filter(Boolean):[];
         if(!codes.length||codes.length>3000)return json(res,400,{error:'لا توجد أكواد صالحة أو تجاوزت الحد المسموح'});
-        const seen=new Set(state.cards.map(c=>c.code));let added=0,duplicates=0;
-        for(const code of codes){if(seen.has(code)){duplicates++;continue;}seen.add(code);state.cards.push({id:id(),code,packageId:pkg.id,status:'available'});added++;}
-        if(!added)return json(res,400,{error:'كل الأكواد مكررة أو غير صالحة'});
-        await save(state);return json(res,200,{ok:true,added,duplicates});
+        const seen=new Set(state.cards.map(c=>String(c.code).toUpperCase()));let added=0,duplicates=0;
+        for(const code of codes){const key=code.toUpperCase();if(seen.has(key)){duplicates++;continue;}seen.add(key);state.cards.push({id:id(),code,packageId:pkg.id,status:'available'});added++;}
+        if(!added)return json(res,400,{error:'كل الأكواد مكررة أو لم يتم استخراج أكواد جديدة'});
+        await save(state);return json(res,200,{ok:true,added,duplicates,packageName:pkg.name});
       }
       if(operation==='stock-add') {
         const pkg=state.packages.find(x=>x.id===body.packageId);
         if(!pkg)return json(res,400,{error:'اختر باقة صحيحة'});
-        const codes=String(body.codes||'').split(/[\n,;]+/).map(safe).filter(Boolean);
-        const seen=new Set(state.cards.map(c=>c.code)); let added=0,duplicates=0;
-        for(const code of codes){if(seen.has(code)){duplicates++;continue;}seen.add(code);state.cards.push({id:id(),code,packageId:pkg.id,status:'available'});added++;}
-        if(!added)return json(res,400,{error:'لم تتم إضافة كروت جديدة؛ تحقق من الأكواد أو التكرار'});
-        await save(state); return json(res,200,{ok:true,added,duplicates});
+        const codes=String(body.codes||'').split(/[\n,;\t ]+/).map(safe).filter(Boolean);
+        if(!codes.length)return json(res,400,{error:'اكتب الأكواد أولاً'});
+        if(codes.length>5000)return json(res,413,{error:'الحد الأقصى 5000 كرت في العملية الواحدة'});
+        const seen=new Set(state.cards.map(c=>String(c.code).toUpperCase()));let added=0,duplicates=0;
+        for(const code of codes){const key=code.toUpperCase();if(seen.has(key)){duplicates++;continue;}seen.add(key);state.cards.push({id:id(),code,packageId:pkg.id,status:'available'});added++;}
+        if(!added)return json(res,400,{error:'كل الأكواد مكررة؛ لم تتم إضافة أي كرت'});
+        await save(state);return json(res,200,{ok:true,added,duplicates,packageName:pkg.name});
       }
       return json(res,400,{error:'عملية المدير غير مدعومة'});
     }
@@ -220,8 +225,20 @@ export default async function handler(req,res) {
       await save(state); return json(res,200,{ok:true,card:{code:card.code},balance:user.balance});
     }
     if(action==='merchant-sale') {
-      if(current.role!=='merchant')return json(res,403,{error:'هذه العملية للتجار'});
-      return json(res,501,{error:'بيع التاجر لم يكتمل بعد؛ لم يتم خصم أي رصيد'});
+      if(current.role!=='merchant')return json(res,403,{error:'هذه العملية للتجار فقط'});
+      const user=state.users.find(x=>x.id===current.id);
+      const customerName=safe(body.customerName), phone=safe(body.phone), packageId=safe(body.packageId);
+      const pkg=state.packages.find(x=>x.id===packageId&&x.active!==false);
+      const card=state.cards.find(c=>c.packageId===packageId&&c.status==='available');
+      if(!user||!customerName||!phone||!pkg)return json(res,400,{error:'أدخل اسم العميل ورقم جواله واختر الباقة'});
+      if(!card)return json(res,400,{error:'لا توجد كروت متاحة لهذه الباقة'});
+      const cost=Number(pkg.merchantPrice);
+      if(!Number.isFinite(cost)||cost<0||Number(user.balance)<cost)return json(res,400,{error:'رصيد التاجر غير كافٍ'});
+      user.balance=Number(user.balance)-cost;
+      card.status='sold';card.ownerId=user.id;card.customerName=customerName;card.customerPhone=phone;card.soldAt=new Date().toISOString();
+      state.transactions.push({id:id(),userId:user.id,type:'merchant-sale',amount:-cost,customerName,phone,packageName:pkg.name,cardCode:card.code,createdAt:new Date().toISOString()});
+      await save(state);
+      return json(res,200,{ok:true,card:{code:card.code},balance:user.balance,customerName,phone,packageName:pkg.name,merchantCost:cost,customerPrice:Number(pkg.customerPrice),profit:Number(pkg.customerPrice)-cost});
     }
     return json(res,400,{error:'عملية غير معروفة'});
   } catch(e) {
