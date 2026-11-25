@@ -22,7 +22,7 @@ export default async function handler(req,res){
   if(action==='login'){
    const u=safe(body.username),p=String(body.password||'');let user=null;
    if(await adminOk(u,p))user={id:'admin',username:u,name:'مدير النظام',role:'admin',balance:0};
-   else {const s=await load();user=s.users.find(x=>x.username===u&&x.status==='active'&&x.passwordHash===await hash(p));}
+   else {const s=await load();const ph=await hash(p);user=s.users.find(x=>x.username===u&&x.status==='active'&&x.passwordHash===ph);}
    if(!user)return json(res,401,{error:'اسم المستخدم أو كلمة المرور غير صحيحة'});
    res.setHeader('Set-Cookie','wtn_session='+session(user)+'; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=86400');return json(res,200,{ok:true,user});
   }
