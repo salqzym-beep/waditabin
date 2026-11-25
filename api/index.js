@@ -97,8 +97,9 @@ export default async function handler(req,res) {
       return json(res,200,{ok:true,user:cleanUser(user)});
     }
     if(action==='logout') {
-      res.setHeader('Set-Cookie',['wtn_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0','wtn_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Expires=Thu, 01 Jan 1970 00:00:00 GMT']);
-      res.setHeader('Cache-Control','no-store');
+      res.setHeader('Set-Cookie','wtn_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0');
+      res.setHeader('Cache-Control','no-store, max-age=0');
+      if(req.method==='GET') { res.statusCode=303; res.setHeader('Location','/index.html?logged_out=1'); return res.end(); }
       return json(res,200,{ok:true});
     }
     if(action==='signup') {
