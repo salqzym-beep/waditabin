@@ -152,7 +152,7 @@ export default async function handler(req,res) {
       if(operation==='stock-add') {
         const pkg=state.packages.find(x=>x.id===body.packageId);
         if(!pkg)return json(res,400,{error:'اختر باقة صحيحة'});
-        const codes=String(body.codes||'').split(/[\\n,;]+/).map(safe).filter(Boolean);
+        const codes=String(body.codes||'').split(/[\n,;]+/).map(safe).filter(Boolean);
         const seen=new Set(state.cards.map(c=>c.code)); let added=0,duplicates=0;
         for(const code of codes){if(seen.has(code)){duplicates++;continue;}seen.add(code);state.cards.push({id:id(),code,packageId:pkg.id,status:'available'});added++;}
         if(!added)return json(res,400,{error:'لم تتم إضافة كروت جديدة؛ تحقق من الأكواد أو التكرار'});
