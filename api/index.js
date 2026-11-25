@@ -177,7 +177,7 @@ export default async function handler(req,res) {
     return json(res,400,{error:'عملية غير معروفة'});
   } catch(e) {
     console.error('wadi-tabin api error',e);
-    if(e?.status===412 || e?.statusCode===412 || e?.name==='BlobPreconditionFailedError') return json(res,409,{error:'حدث تعارض لأن البيانات تغيرت من جلسة أخرى. لم يتم الكتابة فوق التحديث الأحدث؛ حدّث الصفحة ثم أعد العملية.'});
+    if(e?.status===412 || e?.statusCode===412 || e?.name==='BlobPreconditionFailedError') return json(res,409,{code:'CONCURRENT_UPDATE',error:'تغيرت البيانات بالتزامن؛ أعد المحاولة.'});
     return json(res,500,{error:'تعذر إتمام العملية بأمان. لم يتم تأكيد الحفظ؛ أعد تحميل الصفحة وتحقق من البيانات.'});
   }
 }
