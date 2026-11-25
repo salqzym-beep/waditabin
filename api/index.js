@@ -169,6 +169,34 @@ export default async function handler(req,res) {
         state.packages.push({id:id(),name:safe(body.name),customerPrice,merchantPrice,active:true});
         await save(state); return json(res,200,{ok:true});
       }
+      if(operation==='balance-adjust') {
+        const user=state.users.find(x=>x.id===body.id);
+        const amount=Number(body.amount), direction=body.direction==='debit'?'debit':'credit', note=safe(body.note)||'تعديل رصيد بواسطة المدير';
+        if(!user)return json(res,404,{error:'الحساب غير موجود'});
+        if(!Number.isFinite(amount)||amount<=0)return json(res,400,{error:'أدخل مبلغاً صحيحاً أكبر من صفر'});
+        const previous=Number(user.balance||0), delta=direction==='credit'?amount:-amount, next=previous+delta;
+        if(next<0)return json(res,400,{error:'لا يمكن أن يصبح الرصيد بالسالب'});
+        user.balance=next;
+        state.transactions.push({id:id(),userId:user.id,type:direction==='credit'?'balance-credit':'balance-debit',amount:delta,balanceAfter:next,note,createdAt:new Date().toISOString()});
+        await save(state);return json(res,200,{ok:true,balance:next});
+      }
+      if(operation==='package-update') {
+        const pkg=state.packages.find(x=>x.id===body.id);
+        if(!pkg)return json(res,404,{error:'الباقة غير موجودة'});
+        const name=safe(body.name), customerPrice=Number(body.customerPrice), merchantPrice=Number(body.merchantPrice);
+        if(!name||!Number.isFinite(customerPrice)||!Number.isFinite(merchantPrice)||customerPrice<0||merchantPrice<0)return json(res,400,{error:'تحقق من اسم الباقة وأسعارها'});
+        pkg.name=name;pkg.customerPrice=customerPrice;pkg.merchantPrice=merchantPrice;
+        if(body.active==='true'||body.active===true)pkg.active=true;
+        if(body.active==='false'||body.active===false)pkg.active=false;
+        await save(state);return json(res,200,{ok:true});
+      }
+      if(operation==='package-delete') {
+        const pkg=state.packages.find(x=>x.id===body.id);
+        if(!pkg)return json(res,404,{error:'الباقة غير موجودة'});
+        if(state.cards.some(x=>x.packageId===pkg.id))return json(res,409,{error:'لا يمكن حذف باقة مرتبطة بكروت أو سجل سابق. يمكنك إيقافها من التعديل بدلاً من حذفها.'});
+        state.packages=state.packages.filter(x=>x.id!==pkg.id);
+        await save(state);return json(res,200,{ok:true});
+      }
       if(operation==='stock-add') {
         const pkg=state.packages.find(x=>x.id===body.packageId);
         if(!pkg)return json(res,400,{error:'اختر باقة صحيحة'});
