@@ -38,24 +38,14 @@ function isMissingBlob(e) {
 }
 async function load() {
   try {
-    // Read the body and verify its ETag against fresh Blob metadata.
-    // This prevents writing a stale cached snapshot over a newer database version.
-    for(let attempt=0;attempt<3;attempt++) {
-      const r=await get(KEY,{access:'private',token:process.env.BLOB_READ_WRITE_TOKEN});
-      if(!r) return fresh();
-      if(!r.stream)throw new Error('تعذر قراءة ملف قاعدة البيانات من التخزين');
-      const state=JSON.parse(await new Response(r.stream).text());
-      if(!state || !Array.isArray(state.users) || !Array.isArray(state.cards))throw new Error('ملف قاعدة البيانات غير صالح');
-      const metadata=await head(KEY,{access:'private',token:process.env.BLOB_READ_WRITE_TOKEN});
-      const bodyEtag=r.blob?.etag;
-      if(metadata?.etag && bodyEtag && metadata.etag!==bodyEtag) continue;
-      const result={...fresh(),...state};
-      Object.defineProperty(result,'_etag',{value:metadata?.etag||bodyEtag||undefined,writable:true,configurable:true,enumerable:false});
-      return result;
-    }
-    const conflict=new Error('تغيرت قاعدة البيانات أثناء القراءة؛ أعد المحاولة');
-    conflict.status=412;
-    throw conflict;
+    const r=await get(KEY,{access:'private',token:process.env.BLOB_READ_WRITE_TOKEN,useCache:false});
+    if(!r) return fresh();
+    if(!r.stream)throw new Error('تعذر قراءة ملف قاعدة البيانات من التخزين');
+    const state=JSON.parse(await new Response(r.stream).text());
+    if(!state || !Array.isArray(state.users) || !Array.isArray(state.cards))throw new Error('ملف قاعدة البيانات غير صالح');
+    const result={...fresh(),...state};
+    Object.defineProperty(result,'_etag',{value:r.blob?.etag||undefined,writable:true,configurable:true,enumerable:false});
+    return result;
   } catch(e) {
     if(isMissingBlob(e))return fresh();
     throw e;
@@ -65,8 +55,7 @@ async function save(state) {
   const write = async () => {
     const result=await put(KEY,JSON.stringify(state),{
       access:'private',addRandomSuffix:false,allowOverwrite:true,
-      contentType:'application/json',token:process.env.BLOB_READ_WRITE_TOKEN,
-      ...(state._etag && process.env.BLOB_DISABLE_ETAG!=='true'?{ifMatch:state._etag}:{})
+      contentType:'application/json',token:process.env.BLOB_READ_WRITE_TOKEN
     });
     Object.defineProperty(state,'_etag',{value:result.etag,writable:true,configurable:true,enumerable:false});
     return result;
