@@ -124,6 +124,13 @@ export default async function handler(req,res) {
     if(action==='portal-data') {
       const user=state.users.find(x=>x.id===current.id);
       if(!user)return json(res,404,{error:'الحساب غير موجود'});
+      // Recovery guard: a recorded merchant sale is proof this account was configured as a merchant.
+      // Restore only the role flag; never alter balance, cards, or transaction history.
+      const hasMerchantSale=state.transactions.some(t=>t.userId===user.id&&t.type==='merchant-sale');
+      if(user.role!=='merchant'&&hasMerchantSale) {
+        user.role='merchant';
+        await save(state);
+      }
       return json(res,200,{ok:true,user:cleanUser(user),state:{packages:state.packages,cards:state.cards.filter(c=>c.ownerId===user.id),transactions:state.transactions.filter(t=>t.userId===user.id).sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)))}});
     }
     if(action==='admin-action'&&current.role==='admin') {
