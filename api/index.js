@@ -114,7 +114,7 @@ export default async function handler(req,res) {
     if(!current)return json(res,401,{error:'يرجى تسجيل الدخول'});
     const state=await load();
     if(action==='admin-data'&&current.role==='admin') {
-      return json(res,200,{ok:true,state:{...state,requests:state.requests.map(cleanUser),users:state.users.map(cleanUser)}});
+      return json(res,200,{ok:true,state:{...state,requests:[...state.requests].sort((a,b)=>(a.status==='pending'?-1:1)-(b.status==='pending'?-1:1)),users:state.users.map(cleanUser)}});
     }
     if(action==='portal-data') {
       const user=state.users.find(x=>x.id===current.id);
@@ -130,11 +130,26 @@ export default async function handler(req,res) {
           const balance=Number(body.balance??0);
           if(!Number.isFinite(balance)||balance<0)return json(res,400,{error:'الرصيد غير صحيح'});
           if(state.users.some(x=>x.username===request.username))return json(res,409,{error:'الحساب موجود مسبقاً'});
-          state.users.push({id:id(),name:request.name,phone:request.phone,username:request.username,passwordHash:request.passwordHash,role:request.role,status:'active',balance,createdAt:new Date().toISOString()});
+          const approvedPassword=String(body.newPassword||'');
+          if(approvedPassword && approvedPassword.length<8)return json(res,400,{error:'كلمة المرور الجديدة يجب ألا تقل عن 8 أحرف'});
+          state.users.push({id:id(),name:request.name,phone:request.phone,username:request.username,passwordHash:approvedPassword?await hash(approvedPassword):request.passwordHash,role:request.role,status:'active',balance,createdAt:new Date().toISOString()});
         }
         request.status=operation==='approve'?'approved':'rejected';
         await save(state);
         return json(res,200,{ok:true});
+      }
+      if(operation==='user-update') {
+        const user=state.users.find(x=>x.id===body.id);
+        if(!user)return json(res,404,{error:'الحساب غير موجود'});
+        const name=safe(body.name), phone=safe(body.phone), username=safe(body.username);
+        const balance=Number(body.balance), role=body.role==='merchant'?'merchant':'customer';
+        if(!name||!username||!Number.isFinite(balance)||balance<0)return json(res,400,{error:'تحقق من الاسم واسم المستخدم والرصيد'});
+        if(state.users.some(x=>x.id!==user.id&&x.username===username))return json(res,409,{error:'اسم المستخدم مستخدم لحساب آخر'});
+        user.name=name; user.phone=phone; user.username=username; user.role=role; user.balance=balance;
+        if(body.status==='active'||body.status==='suspended')user.status=body.status;
+        const newPassword=String(body.newPassword||'');
+        if(newPassword){if(newPassword.length<8)return json(res,400,{error:'كلمة المرور يجب ألا تقل عن 8 أحرف'});user.passwordHash=await hash(newPassword);}
+        await save(state); return json(res,200,{ok:true});
       }
       if(operation==='create-user') {
         const username=safe(body.username), password=String(body.password||''), balance=Number(body.balance||0);
