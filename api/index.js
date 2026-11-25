@@ -1,6 +1,7 @@
 import { put, get, head } from '@vercel/blob';
 import crypto from 'node:crypto';
 import { promisify } from 'node:util';
+import pdf from 'pdf-parse/lib/pdf-parse.js';
 
 const scrypt = promisify(crypto.scrypt);
 const KEY = process.env.DATA_KEY || 'wadi-tabin/database/state.json';
@@ -163,6 +164,39 @@ export default async function handler(req,res) {
         if(!safe(body.name)||!Number.isFinite(customerPrice)||!Number.isFinite(merchantPrice)||customerPrice<0||merchantPrice<0)return json(res,400,{error:'بيانات الباقة أو الأسعار غير صحيحة'});
         state.packages.push({id:id(),name:safe(body.name),customerPrice,merchantPrice,active:true});
         await save(state); return json(res,200,{ok:true});
+      }
+      if(operation==='stock-pdf-import') {
+        const pkg=state.packages.find(x=>x.id===body.packageId);
+        if(!pkg)return json(res,400,{error:'اختر الباقة أولاً'});
+        const b64=String(body.pdfBase64||'');
+        if(!b64||b64.length>7*1024*1024)return json(res,413,{error:'ملف PDF فارغ أو أكبر من 5MB'});
+        const buffer=Buffer.from(b64,'base64');
+        if(buffer.subarray(0,5).toString()!=='%PDF-')return json(res,400,{error:'الملف المرفوع ليس PDF صالحاً'});
+        const parsed=await pdf(buffer);
+        const raw=String(parsed.text||'').replace(/\u0000/g,' ');
+        const lines=raw.split(/[\r\n]+/).map(x=>x.trim()).filter(Boolean);
+        const candidates=[];
+        for(const line of lines){
+          const cleaned=line.replace(/^\s*(?:\d+[.)-]?\s*)/,'').trim();
+          if(/^(?:page\s+\d+|صفحة\s+\d+)$/i.test(cleaned))continue;
+          const tokens=cleaned.match(/[A-Za-z0-9][A-Za-z0-9_-]{3,39}/g)||[];
+          if(tokens.length===1)candidates.push(tokens[0]);
+          else if(tokens.length===2 && /^[A-Za-z0-9_-]{4,40}$/.test(tokens[0]) && /^[A-Za-z0-9_-]{4,40}$/.test(tokens[1]))candidates.push(tokens.join(' '));
+        }
+        const unique=[...new Set(candidates)];
+        const seen=new Set(state.cards.map(c=>c.code));
+        const newCodes=unique.filter(code=>!seen.has(code));
+        return json(res,200,{ok:true,preview:true,packageId:pkg.id,packageName:pkg.name,total:unique.length,duplicates:unique.length-newCodes.length,codes:newCodes.slice(0,3000),message:'راجع الأكواد المستخرجة قبل اعتمادها'});
+      }
+      if(operation==='stock-pdf-confirm') {
+        const pkg=state.packages.find(x=>x.id===body.packageId);
+        if(!pkg)return json(res,400,{error:'الباقة غير موجودة'});
+        const codes=Array.isArray(body.codes)?body.codes.map(safe).filter(Boolean):[];
+        if(!codes.length||codes.length>3000)return json(res,400,{error:'لا توجد أكواد صالحة أو تجاوزت الحد المسموح'});
+        const seen=new Set(state.cards.map(c=>c.code));let added=0,duplicates=0;
+        for(const code of codes){if(seen.has(code)){duplicates++;continue;}seen.add(code);state.cards.push({id:id(),code,packageId:pkg.id,status:'available'});added++;}
+        if(!added)return json(res,400,{error:'كل الأكواد مكررة أو غير صالحة'});
+        await save(state);return json(res,200,{ok:true,added,duplicates});
       }
       if(operation==='stock-add') {
         const pkg=state.packages.find(x=>x.id===body.packageId);
