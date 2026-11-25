@@ -1,7 +1,6 @@
 import { put, get, head } from '@vercel/blob';
 import crypto from 'node:crypto';
 import { promisify } from 'node:util';
-import pdf from 'pdf-parse/lib/pdf-parse.js';
 
 const scrypt = promisify(crypto.scrypt);
 const KEY = process.env.DATA_KEY || 'wadi-tabin/database/state.json';
@@ -134,6 +133,7 @@ export default async function handler(req,res) {
           const approvedPassword=String(body.newPassword||'');
           if(approvedPassword.length<8)return json(res,400,{error:'عيّن كلمة مرور جديدة لا تقل عن 8 أحرف قبل التفعيل؛ لا يمكن استرجاع كلمة المرور القديمة'});
           state.users.push({id:id(),name:request.name,phone:request.phone,username:request.username,passwordHash:await hash(approvedPassword),role:request.role,status:'active',balance,createdAt:new Date().toISOString()});
+          if(balance>0)state.transactions.push({id:id(),userId:state.users[state.users.length-1].id,type:'balance-credit',amount:balance,note:'رصيد افتتاحي عند تفعيل الحساب',createdAt:new Date().toISOString()});
         }
         request.status=operation==='approve'?'approved':'rejected';
         await save(state);
@@ -146,7 +146,8 @@ export default async function handler(req,res) {
         const balance=Number(body.balance), role=body.role==='merchant'?'merchant':'customer';
         if(!name||!username||!Number.isFinite(balance)||balance<0)return json(res,400,{error:'تحقق من الاسم واسم المستخدم والرصيد'});
         if(state.users.some(x=>x.id!==user.id&&x.username===username))return json(res,409,{error:'اسم المستخدم مستخدم لحساب آخر'});
-        user.name=name; user.phone=phone; user.username=username; user.role=role; user.balance=balance;
+        const previousBalance=Number(user.balance||0); user.name=name; user.phone=phone; user.username=username; user.role=role; user.balance=balance;
+        if(balance!==previousBalance)state.transactions.push({id:id(),userId:user.id,type:balance>previousBalance?'balance-credit':'balance-debit',amount:balance-previousBalance,note:'تعديل رصيد بواسطة المدير',createdAt:new Date().toISOString()});
         if(body.status==='active'||body.status==='suspended')user.status=body.status;
         const newPassword=String(body.newPassword||'');
         if(newPassword){if(newPassword.length<8)return json(res,400,{error:'كلمة المرور يجب ألا تقل عن 8 أحرف'});user.passwordHash=await hash(newPassword);}
@@ -156,7 +157,7 @@ export default async function handler(req,res) {
         const username=safe(body.username), password=String(body.password||''), balance=Number(body.balance||0);
         if(!username||password.length<8||!safe(body.name)||!Number.isFinite(balance)||balance<0)return json(res,400,{error:'تحقق من البيانات وكلمة المرور والرصيد'});
         if(state.users.some(x=>x.username===username)||state.requests.some(x=>x.username===username))return json(res,409,{error:'اسم المستخدم موجود'});
-        state.users.push({id:id(),name:safe(body.name),phone:safe(body.phone),username,passwordHash:await hash(password),role:body.role==='merchant'?'merchant':'customer',status:'active',balance,createdAt:new Date().toISOString()});
+        const createdUser={id:id(),name:safe(body.name),phone:safe(body.phone),username,passwordHash:await hash(password),role:body.role==='merchant'?'merchant':'customer',status:'active',balance,createdAt:new Date().toISOString()}; state.users.push(createdUser); if(balance>0)state.transactions.push({id:id(),userId:createdUser.id,type:'balance-credit',amount:balance,note:'رصيد افتتاحي عند إنشاء الحساب',createdAt:new Date().toISOString()});
         await save(state); return json(res,200,{ok:true});
       }
       if(operation==='package-create') {
@@ -164,42 +165,6 @@ export default async function handler(req,res) {
         if(!safe(body.name)||!Number.isFinite(customerPrice)||!Number.isFinite(merchantPrice)||customerPrice<0||merchantPrice<0)return json(res,400,{error:'بيانات الباقة أو الأسعار غير صحيحة'});
         state.packages.push({id:id(),name:safe(body.name),customerPrice,merchantPrice,active:true});
         await save(state); return json(res,200,{ok:true});
-      }
-      if(operation==='stock-pdf-import') {
-        const pkg=state.packages.find(x=>x.id===body.packageId);
-        if(!pkg)return json(res,400,{error:'اختر الباقة أولاً'});
-        const b64=String(body.pdfBase64||'');
-        if(!b64||b64.length>7*1024*1024)return json(res,413,{error:'ملف PDF فارغ أو أكبر من 5MB'});
-        const buffer=Buffer.from(b64,'base64');
-        if(buffer.subarray(0,5).toString()!=='%PDF-')return json(res,400,{error:'الملف المرفوع ليس PDF صالحاً'});
-        const parsed=await pdf(buffer);
-        const raw=String(parsed?.text||'').replace(/\u0000/g,' ');
-        if(!raw.trim())return json(res,422,{error:'لم أجد نصاً قابلاً للاستخراج في PDF. إذا كان الملف صوراً ممسوحة ضوئياً فسيحتاج OCR.'});
-        const normalized=raw.replace(/[٠-٩]/g,d=>'٠١٢٣٤٥٦٧٨٩'.indexOf(d)).replace(/[\u200e\u200f]/g,' ');
-        const found=[];
-        for(const line of normalized.split(/[\r\n]+/)){
-          const clean=line.trim();
-          if(!clean||/^(?:page\s*\d+|صفحة\s*\d+)$/i.test(clean))continue;
-          const matches=clean.match(/[A-Za-z0-9][A-Za-z0-9_-]{5,39}/g)||[];
-          for(const token of matches){
-            if(/^\d{4}$/.test(token))continue;
-            found.push(token);
-          }
-        }
-        const unique=[...new Map(found.map(code=>[code.toUpperCase(),code])).values()];
-        const seen=new Set(state.cards.map(c=>String(c.code).toUpperCase()));
-        const freshCodes=unique.filter(code=>!seen.has(code.toUpperCase()));
-        return json(res,200,{ok:true,preview:true,packageId:pkg.id,packageName:pkg.name,total:unique.length,duplicates:unique.length-freshCodes.length,codes:freshCodes.slice(0,3000),message:'راجع الأكواد المستخرجة قبل اعتمادها'});
-      }
-      if(operation==='stock-pdf-confirm') {
-        const pkg=state.packages.find(x=>x.id===body.packageId);
-        if(!pkg)return json(res,400,{error:'الباقة غير موجودة'});
-        const codes=Array.isArray(body.codes)?body.codes.map(safe).filter(Boolean):[];
-        if(!codes.length||codes.length>3000)return json(res,400,{error:'لا توجد أكواد صالحة أو تجاوزت الحد المسموح'});
-        const seen=new Set(state.cards.map(c=>String(c.code).toUpperCase()));let added=0,duplicates=0;
-        for(const code of codes){const key=code.toUpperCase();if(seen.has(key)){duplicates++;continue;}seen.add(key);state.cards.push({id:id(),code,packageId:pkg.id,status:'available'});added++;}
-        if(!added)return json(res,400,{error:'كل الأكواد مكررة أو لم يتم استخراج أكواد جديدة'});
-        await save(state);return json(res,200,{ok:true,added,duplicates,packageName:pkg.name});
       }
       if(operation==='stock-add') {
         const pkg=state.packages.find(x=>x.id===body.packageId);
