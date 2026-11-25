@@ -43,17 +43,22 @@ async function load() {
     if(!r?.stream)throw new Error('تعذر قراءة ملف قاعدة البيانات من التخزين');
     const state=JSON.parse(await new Response(r.stream).text());
     if(!state || !Array.isArray(state.users) || !Array.isArray(state.cards))throw new Error('ملف قاعدة البيانات غير صالح');
-    return {...fresh(),...state};
+    const result={...fresh(),...state}; Object.defineProperty(result,'_etag',{value:r.blob?.etag||undefined,writable:true,configurable:true,enumerable:false}); return result;
   } catch(e) {
     if(isMissingBlob(e))return fresh();
     throw e;
   }
 }
 async function save(state) {
-  const write = async () => put(KEY,JSON.stringify(state),{
-    access:'private',addRandomSuffix:false,allowOverwrite:true,
-    contentType:'application/json',token:process.env.BLOB_READ_WRITE_TOKEN
-  });
+  const write = async () => {
+    const result=await put(KEY,JSON.stringify(state),{
+      access:'private',addRandomSuffix:false,allowOverwrite:true,
+      contentType:'application/json',token:process.env.BLOB_READ_WRITE_TOKEN,
+      ...(state._etag?{ifMatch:state._etag}:{})
+    });
+    Object.defineProperty(state,'_etag',{value:result.etag,writable:true,configurable:true,enumerable:false});
+    return result;
+  };
   const task=writeQueue.then(write,write);
   writeQueue=task.then(()=>undefined,()=>undefined);
   await task;
@@ -172,6 +177,7 @@ export default async function handler(req,res) {
     return json(res,400,{error:'عملية غير معروفة'});
   } catch(e) {
     console.error('wadi-tabin api error',e);
+    if(e?.status===412 || e?.statusCode===412 || e?.name==='BlobPreconditionFailedError') return json(res,409,{error:'حدث تعارض لأن البيانات تغيرت من جلسة أخرى. لم يتم الكتابة فوق التحديث الأحدث؛ حدّث الصفحة ثم أعد العملية.'});
     return json(res,500,{error:'تعذر إتمام العملية بأمان. لم يتم تأكيد الحفظ؛ أعد تحميل الصفحة وتحقق من البيانات.'});
   }
 }
