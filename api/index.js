@@ -132,8 +132,8 @@ export default async function handler(req,res) {
           if(!Number.isFinite(balance)||balance<0)return json(res,400,{error:'الرصيد غير صحيح'});
           if(state.users.some(x=>x.username===request.username))return json(res,409,{error:'الحساب موجود مسبقاً'});
           const approvedPassword=String(body.newPassword||'');
-          if(approvedPassword && approvedPassword.length<8)return json(res,400,{error:'كلمة المرور الجديدة يجب ألا تقل عن 8 أحرف'});
-          state.users.push({id:id(),name:request.name,phone:request.phone,username:request.username,passwordHash:approvedPassword?await hash(approvedPassword):request.passwordHash,role:request.role,status:'active',balance,createdAt:new Date().toISOString()});
+          if(approvedPassword.length<8)return json(res,400,{error:'عيّن كلمة مرور جديدة لا تقل عن 8 أحرف قبل التفعيل؛ لا يمكن استرجاع كلمة المرور القديمة'});
+          state.users.push({id:id(),name:request.name,phone:request.phone,username:request.username,passwordHash:await hash(approvedPassword),role:request.role,status:'active',balance,createdAt:new Date().toISOString()});
         }
         request.status=operation==='approve'?'approved':'rejected';
         await save(state);
