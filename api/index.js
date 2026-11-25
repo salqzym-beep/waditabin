@@ -38,9 +38,9 @@ function isMissingBlob(e) {
 }
 async function load() {
   try {
-    await head(KEY,{token:process.env.BLOB_READ_WRITE_TOKEN});
-    const r=await get(KEY,{access:'private',token:process.env.BLOB_READ_WRITE_TOKEN});
-    if(!r?.stream)throw new Error('تعذر قراءة ملف قاعدة البيانات من التخزين');
+    const r=await get(KEY,{access:'private',token:process.env.BLOB_READ_WRITE_TOKEN,useCache:false});
+    if(!r) return fresh();
+    if(!r.stream)throw new Error('تعذر قراءة ملف قاعدة البيانات من التخزين');
     const state=JSON.parse(await new Response(r.stream).text());
     if(!state || !Array.isArray(state.users) || !Array.isArray(state.cards))throw new Error('ملف قاعدة البيانات غير صالح');
     const result={...fresh(),...state}; Object.defineProperty(result,'_etag',{value:r.blob?.etag||undefined,writable:true,configurable:true,enumerable:false}); return result;
@@ -177,7 +177,7 @@ export default async function handler(req,res) {
     return json(res,400,{error:'عملية غير معروفة'});
   } catch(e) {
     console.error('wadi-tabin api error',e);
-    if(e?.status===412 || e?.statusCode===412 || e?.name==='BlobPreconditionFailedError') return json(res,409,{code:'CONCURRENT_UPDATE',error:'تغيرت البيانات بالتزامن؛ أعد المحاولة.'});
+    if(e?.status===412 || e?.statusCode===412 || e?.name==='BlobPreconditionFailedError') return json(res,409,{code:'CONCURRENT_UPDATE',error:'تغيرت البيانات أثناء الحفظ. حدّث الصفحة ثم أعد المحاولة.'});
     return json(res,500,{error:'تعذر إتمام العملية بأمان. لم يتم تأكيد الحفظ؛ أعد تحميل الصفحة وتحقق من البيانات.'});
   }
 }
