@@ -114,7 +114,7 @@ export default async function handler(req,res) {
     if(!current)return json(res,401,{error:'يرجى تسجيل الدخول'});
     const state=await load();
     if(action==='admin-data'&&current.role==='admin') {
-      return json(res,200,{ok:true,state:{...state,requests:[...state.requests].sort((a,b)=>(a.status==='pending'?-1:1)-(b.status==='pending'?-1:1)),users:state.users.map(cleanUser)}});
+      return json(res,200,{ok:true,state:{...state,requests:[...state.requests].sort((a,b)=>(a.status==='pending'?-1:1)-(b.status==='pending'?-1:1)).map(cleanUser),users:state.users.map(cleanUser)}});
     }
     if(action==='portal-data') {
       const user=state.users.find(x=>x.id===current.id);
