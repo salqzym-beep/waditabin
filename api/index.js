@@ -136,7 +136,7 @@ export default async function handler(req,res) {
           const approvedPassword=String(body.newPassword||'');
           if(approvedPassword.length<8)return json(res,400,{error:'عيّن كلمة مرور جديدة لا تقل عن 8 أحرف قبل التفعيل؛ لا يمكن استرجاع كلمة المرور القديمة'});
           state.users.push({id:id(),name:request.name,phone:request.phone,username:request.username,passwordHash:await hash(approvedPassword),role:request.role,status:'active',balance,createdAt:new Date().toISOString()});
-          if(balance>0)state.transactions.push({id:id(),userId:state.users[state.users.length-1].id,type:'balance-credit',amount:balance,note:'رصيد افتتاحي عند تفعيل الحساب',createdAt:new Date().toISOString()});
+          if(balance>0)state.transactions.push({id:id(),userId:state.users[state.users.length-1].id,type:'balance-credit',amount:balance,balanceAfter:balance,note:'رصيد افتتاحي عند تفعيل الحساب',createdAt:new Date().toISOString()});
         }
         request.status=operation==='approve'?'approved':'rejected';
         await save(state);
@@ -150,7 +150,7 @@ export default async function handler(req,res) {
         if(!name||!username||!Number.isFinite(balance)||balance<0)return json(res,400,{error:'تحقق من الاسم واسم المستخدم والرصيد'});
         if(state.users.some(x=>x.id!==user.id&&x.username===username))return json(res,409,{error:'اسم المستخدم مستخدم لحساب آخر'});
         const previousBalance=Number(user.balance||0); user.name=name; user.phone=phone; user.username=username; user.role=role; user.balance=balance;
-        if(balance!==previousBalance)state.transactions.push({id:id(),userId:user.id,type:balance>previousBalance?'balance-credit':'balance-debit',amount:balance-previousBalance,note:'تعديل رصيد بواسطة المدير',createdAt:new Date().toISOString()});
+        if(balance!==previousBalance)state.transactions.push({id:id(),userId:user.id,type:balance>previousBalance?'balance-credit':'balance-debit',amount:balance-previousBalance,balanceAfter:balance,note:'تعديل رصيد بواسطة المدير',createdAt:new Date().toISOString()});
         if(body.status==='active'||body.status==='suspended')user.status=body.status;
         const newPassword=String(body.newPassword||'');
         if(newPassword){if(newPassword.length<8)return json(res,400,{error:'كلمة المرور يجب ألا تقل عن 8 أحرف'});user.passwordHash=await hash(newPassword);}
@@ -160,7 +160,7 @@ export default async function handler(req,res) {
         const username=safe(body.username), password=String(body.password||''), balance=Number(body.balance||0);
         if(!username||password.length<8||!safe(body.name)||!Number.isFinite(balance)||balance<0)return json(res,400,{error:'تحقق من البيانات وكلمة المرور والرصيد'});
         if(state.users.some(x=>x.username===username)||state.requests.some(x=>x.username===username))return json(res,409,{error:'اسم المستخدم موجود'});
-        const createdUser={id:id(),name:safe(body.name),phone:safe(body.phone),username,passwordHash:await hash(password),role:body.role==='merchant'?'merchant':'customer',status:'active',balance,createdAt:new Date().toISOString()}; state.users.push(createdUser); if(balance>0)state.transactions.push({id:id(),userId:createdUser.id,type:'balance-credit',amount:balance,note:'رصيد افتتاحي عند إنشاء الحساب',createdAt:new Date().toISOString()});
+        const createdUser={id:id(),name:safe(body.name),phone:safe(body.phone),username,passwordHash:await hash(password),role:body.role==='merchant'?'merchant':'customer',status:'active',balance,createdAt:new Date().toISOString()}; state.users.push(createdUser); if(balance>0)state.transactions.push({id:id(),userId:createdUser.id,type:'balance-credit',amount:balance,balanceAfter:balance,note:'رصيد افتتاحي عند إنشاء الحساب',createdAt:new Date().toISOString()});
         await save(state); return json(res,200,{ok:true});
       }
       if(operation==='package-create') {
@@ -217,7 +217,7 @@ export default async function handler(req,res) {
       const price=Number(pkg.customerPrice);
       if(!Number.isFinite(price)||price<0||user.balance<price)return json(res,400,{error:'الرصيد غير كافٍ أو سعر الباقة غير صحيح'});
       user.balance-=price; card.status='sold'; card.ownerId=user.id;
-      state.transactions.push({id:id(),userId:user.id,type:'purchase',amount:-price,createdAt:new Date().toISOString()});
+      state.transactions.push({id:id(),userId:user.id,type:'purchase',amount:-price,balanceAfter:user.balance,packageName:pkg.name,cardCode:card.code,note:'شراء كرت من المحفظة',createdAt:new Date().toISOString()});
       await save(state); return json(res,200,{ok:true,card:{code:card.code},balance:user.balance});
     }
     if(action==='merchant-sale') {
@@ -232,7 +232,7 @@ export default async function handler(req,res) {
       if(!Number.isFinite(cost)||cost<0||Number(user.balance)<cost)return json(res,400,{error:'رصيد التاجر غير كافٍ'});
       user.balance=Number(user.balance)-cost;
       card.status='sold';card.ownerId=user.id;card.customerName=customerName;card.customerPhone=phone;card.soldAt=new Date().toISOString();
-      state.transactions.push({id:id(),userId:user.id,type:'merchant-sale',amount:-cost,customerName,phone,packageName:pkg.name,cardCode:card.code,createdAt:new Date().toISOString()});
+      state.transactions.push({id:id(),userId:user.id,type:'merchant-sale',amount:-cost,balanceAfter:user.balance,customerName,phone,packageName:pkg.name,cardCode:card.code,note:'بيع كرت للعميل '+customerName,createdAt:new Date().toISOString()});
       await save(state);
       return json(res,200,{ok:true,card:{code:card.code},balance:user.balance,customerName,phone,packageName:pkg.name,merchantCost:cost,customerPrice:Number(pkg.customerPrice),profit:Number(pkg.customerPrice)-cost});
     }
