@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import { promisify } from 'node:util';
 
 const scrypt = promisify(crypto.scrypt);
-const KEY = 'wadi-tabin/database/state.json';
+const KEY = process.env.DATA_KEY || 'wadi-tabin/database/state.json';
 const json = (res, status, obj) => { res.statusCode=status; res.setHeader('Content-Type','application/json; charset=utf-8'); res.end(JSON.stringify(obj)); };
 const safe = v => String(v ?? '').trim();
 const id = () => crypto.randomUUID();
@@ -54,7 +54,7 @@ async function save(state) {
     const result=await put(KEY,JSON.stringify(state),{
       access:'private',addRandomSuffix:false,allowOverwrite:true,
       contentType:'application/json',token:process.env.BLOB_READ_WRITE_TOKEN,
-      ...(state._etag?{ifMatch:state._etag}:{})
+      ...(state._etag && process.env.BLOB_DISABLE_ETAG!=='true'?{ifMatch:state._etag}:{})
     });
     Object.defineProperty(state,'_etag',{value:result.etag,writable:true,configurable:true,enumerable:false});
     return result;
