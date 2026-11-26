@@ -140,6 +140,19 @@ export default async function handler(req,res) {
     }
     if(action==='admin-action'&&current.role==='admin') {
       const operation=safe(body.operation);
+      if(operation==='login-ad-image-upload') {
+        const match=String(body.imageData||'').match(/^data:(image\\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/);
+        if(!match)return json(res,400,{error:'صيغة الصورة غير صحيحة'});
+        const bytes=Buffer.from(match[2],'base64');
+        if(!bytes.length||bytes.length>3*1024*1024)return json(res,400,{error:'حجم الصورة يجب ألا يتجاوز 3 ميجابايت'});
+        const ext=match[1]==='image/jpeg'?'jpg':match[1].split('/')[1];
+        const result=await put('wadi-tabin/ads/merchant-login.'+ext,bytes,{access:'private',addRandomSuffix:false,allowOverwrite:true,contentType:match[1],token:process.env.BLOB_READ_WRITE_TOKEN});
+        state.loginAdvertisement={...(state.loginAdvertisement||{}),imagePath:result.pathname,imageType:match[1],updatedAt:new Date().toISOString()};
+        await save(state);return json(res,200,{ok:true});
+      }
+      if(operation==='login-ad-image-remove') {if(state.loginAdvertisement){delete state.loginAdvertisement.imagePath;delete state.loginAdvertisement.imageType;state.loginAdvertisement.updatedAt=new Date().toISOString();await save(state)}return json(res,200,{ok:true})}
+      if(operation==='login-ad-save') {state.loginAdvertisement={...(state.loginAdvertisement||{}),text:safe(body.text),phone:safe(body.phone),updatedAt:new Date().toISOString()};await save(state);return json(res,200,{ok:true})}
+      if(operation==='login-ad-clear') {state.loginAdvertisement={text:'',phone:'',updatedAt:new Date().toISOString()};await save(state);return json(res,200,{ok:true})}
       if(operation==='admin-credentials-update') {
         const username=safe(body.username), currentPassword=String(body.currentPassword||''), newPassword=String(body.newPassword||'');
         if(!username || !currentPassword)return json(res,400,{error:'أدخل اسم المستخدم الحالي وكلمة المرور الحالية'});
