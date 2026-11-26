@@ -173,6 +173,21 @@ export default async function handler(req,res) {
         if(!added)return json(res,400,{error:'لم تتم إضافة كروت جديدة؛ تحقق من الأكواد أو التكرار'});
         await save(state); return json(res,200,{ok:true,added,duplicates});
       }
+
+      if(operation==='package-delete') {
+        const pkg=state.packages.find(x=>x.id===body.id);
+        if(!pkg)return json(res,404,{error:'الباقة غير موجودة'});
+        if(state.cards.some(c=>c.packageId===pkg.id))return json(res,409,{error:'لا يمكن حذف الباقة لارتباطها بكروت. احذف كروت المخزون أولاً.'});
+        state.packages=state.packages.filter(x=>x.id!==pkg.id);
+        await save(state); return json(res,200,{ok:true});
+      }
+      if(operation==='stock-delete') {
+        const card=state.cards.find(x=>x.id===body.id);
+        if(!card)return json(res,404,{error:'الكرت غير موجود'});
+        if(card.status!=='available'||card.ownerId)return json(res,409,{error:'لا يمكن حذف كرت تم بيعه أو تخصيصه'});
+        state.cards=state.cards.filter(x=>x.id!==card.id);
+        await save(state); return json(res,200,{ok:true});
+      }
       return json(res,400,{error:'عملية المدير غير مدعومة'});
     }
     if(action==='purchase') {
