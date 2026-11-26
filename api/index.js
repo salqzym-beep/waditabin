@@ -151,7 +151,19 @@ export default async function handler(req,res) {
         await save(state);return json(res,200,{ok:true});
       }
       if(operation==='login-ad-image-remove') {if(state.loginAdvertisement){delete state.loginAdvertisement.imagePath;delete state.loginAdvertisement.imageType;state.loginAdvertisement.updatedAt=new Date().toISOString();await save(state)}return json(res,200,{ok:true})}
-      if(operation==='login-ad-save') {state.loginAdvertisement={...(state.loginAdvertisement||{}),text:safe(body.text),phone:safe(body.phone),updatedAt:new Date().toISOString()};await save(state);return json(res,200,{ok:true})}
+      if(operation==='login-ad-save') {
+        const ad={...(state.loginAdvertisement||{}),text:safe(body.text),phone:safe(body.phone),updatedAt:new Date().toISOString()};
+        if(body.imageData){
+          const data=String(body.imageData),comma=data.indexOf(','),header=data.slice(0,comma),mime=header.slice(5),payload=data.slice(comma+1);
+          if(comma<0||!['image/jpeg','image/png','image/webp'].includes(mime)||!header.endsWith(';base64')||!/^[A-Za-z0-9+/=]+$/.test(payload))return json(res,400,{error:'صيغة الصورة غير صحيحة'});
+          const bytes=Buffer.from(payload,'base64');
+          if(!bytes.length||bytes.length>3*1024*1024)return json(res,400,{error:'حجم الصورة يجب ألا يتجاوز 3 ميجابايت'});
+          const ext=mime==='image/jpeg'?'jpg':mime.split('/')[1];
+          const result=await put('wadi-tabin/ads/merchant-login.'+ext,bytes,{access:'private',addRandomSuffix:false,allowOverwrite:true,contentType:mime,token:process.env.BLOB_READ_WRITE_TOKEN});
+          ad.imagePath=result.pathname;ad.imageType=mime;
+        }
+        state.loginAdvertisement=ad;await save(state);return json(res,200,{ok:true,advertisement:{text:ad.text,phone:ad.phone,hasImage:!!ad.imagePath}});
+      }
       if(operation==='login-ad-clear') {state.loginAdvertisement={text:'',phone:'',updatedAt:new Date().toISOString()};await save(state);return json(res,200,{ok:true})}
       if(operation==='admin-credentials-update') {
         const username=safe(body.username), currentPassword=String(body.currentPassword||''), newPassword=String(body.newPassword||'');
