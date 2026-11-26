@@ -1,6 +1,7 @@
 import { put, get, head } from '@vercel/blob';
 import crypto from 'node:crypto';
 import { promisify } from 'node:util';
+import pdfParse from 'pdf-parse';
 
 const scrypt = promisify(crypto.scrypt);
 const KEY = process.env.DATA_KEY || 'wadi-tabin/database/state.json';
@@ -114,6 +115,18 @@ export default async function handler(req,res) {
     if(action==='signup') { return json(res,403,{error:'إنشاء الحسابات يتم عن طريق إدارة الشبكة فقط'}); }
     if(!current)return json(res,401,{error:'يرجى تسجيل الدخول'});
     const state=await load();
+    if(action==='pdf-preview'&&current.role==='admin') {
+      const raw=String(body.pdfData||'');
+      const match=raw.match(/^data:application\\/pdf;base64,([A-Za-z0-9+/=]+)$/);
+      if(!match)return json(res,400,{error:'ملف PDF غير صالح'});
+      const buffer=Buffer.from(match[1],'base64');
+      if(!buffer.length||buffer.length>8*1024*1024)return json(res,413,{error:'حجم ملف PDF يجب ألا يتجاوز 8 ميجابايت'});
+      const parsed=await pdfParse(buffer);
+      const lines=String(parsed.text||'').split(/\\r?\\n/).map(x=>x.trim()).filter(Boolean);
+      const usernames=lines.filter(x=>x.length<=100&&!/^\\d+$/.test(x)&&!/(اسم المستخدم|username|password|كلمة المرور|page \\d+)/i.test(x));
+      if(!usernames.length)return json(res,422,{error:'لم أجد أسماء مستخدمين واضحة داخل PDF'});
+      return json(res,200,{ok:true,usernames,total:usernames.length});
+    }
     if(action==='admin-data'&&current.role==='admin') {
       const userNames=new Map(state.users.map(u=>[u.id,u.username]));
       const transactions=state.transactions.map(t=>({...t,username:t.username||userNames.get(t.userId)||'—'}));
