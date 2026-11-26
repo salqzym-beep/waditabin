@@ -191,7 +191,7 @@ export default async function handler(req,res) {
       if(operation==='package-create') {
         const customerPrice=Number(body.customerPrice), merchantPrice=Number(body.merchantPrice);
         if(!safe(body.name)||!Number.isFinite(customerPrice)||!Number.isFinite(merchantPrice)||customerPrice<0||merchantPrice<0)return json(res,400,{error:'بيانات الباقة أو الأسعار غير صحيحة'});
-        state.packages.push({id:id(),name:safe(body.name),customerPrice,merchantPrice,active:true});
+        state.packages.push({id:id(),name:safe(body.name),customerPrice,merchantPrice,validity:safe(body.validity),size:safe(body.size),active:true});
         await save(state); return json(res,200,{ok:true});
       }
       if(operation==='balance-adjust') {
@@ -210,7 +210,7 @@ export default async function handler(req,res) {
         if(!pkg)return json(res,404,{error:'الباقة غير موجودة'});
         const name=safe(body.name), customerPrice=Number(body.customerPrice), merchantPrice=Number(body.merchantPrice);
         if(!name||!Number.isFinite(customerPrice)||!Number.isFinite(merchantPrice)||customerPrice<0||merchantPrice<0)return json(res,400,{error:'تحقق من اسم الباقة وأسعارها'});
-        pkg.name=name;pkg.customerPrice=customerPrice;pkg.merchantPrice=merchantPrice;
+        pkg.name=name;pkg.customerPrice=customerPrice;pkg.merchantPrice=merchantPrice;pkg.validity=safe(body.validity);pkg.size=safe(body.size);
         if(body.active==='true'||body.active===true)pkg.active=true;
         if(body.active==='false'||body.active===false)pkg.active=false;
         await save(state);return json(res,200,{ok:true});
