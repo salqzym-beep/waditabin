@@ -25,19 +25,8 @@
    if(result.error)throw new Error(result.error);
    if(result.user?.role!=='admin')throw new Error('تم رفض الدخول: بيانات المدير غير صحيحة أو الحساب ليس مديراً.');
    message.style.color='#54d6c7';
-   message.textContent='تم قبول البيانات. جارٍ التحقق من الجلسة...';
-   const sessionCheck=await fetch('/api',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',cache:'no-store',body:JSON.stringify({action:'admin-data'})});
-   const sessionRaw=await sessionCheck.text();
-   let sessionResult={};
-   try{sessionResult=sessionRaw?JSON.parse(sessionRaw):{};}catch(_){throw new Error('تم قبول كلمة المرور لكن تعذّر قراءة جلسة الدخول (HTTP '+sessionCheck.status+').');}
-   if(!sessionCheck.ok||!sessionResult.user||sessionResult.user.role!=='admin'){
-    throw new Error('كلمة المرور صحيحة، لكن جلسة المدير لم تُحفظ في المتصفح. حدّث الصفحة وتحقق من إعدادات الكوكيز في الموقع.');
-   }
-   if(typeof load==='function')await load();
-   document.getElementById('loginBox').hidden=true;
-   document.getElementById('dashboard').hidden=false;
-   message.style.color='#54d6c7';
-   message.textContent='تم تسجيل الدخول بنجاح وفتح لوحة المدير.';
+   message.textContent='بيانات الدخول صحيحة. جارٍ فتح لوحة المدير...';
+   window.location.reload();
   }catch(error){
    message.style.color='#ff8b8b';
    message.setAttribute('role','alert');
