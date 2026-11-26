@@ -8,7 +8,6 @@
     "start": "node api/index.js"
   },
   "dependencies": {
-    "@vercel/blob": "^2.0.0",
-    "pdf-parse": "1.1.1"
+    "@vercel/blob": "^2.0.0"
   }
 }
