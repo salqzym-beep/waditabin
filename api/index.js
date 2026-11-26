@@ -90,6 +90,72 @@ export default async function handler(req,res) {
   } catch { return json(res,400,{error:'بيانات غير صالحة'}); }
 
   const action=safe(body.action);
+  // Public read-only polling endpoint for the manager's WebToApp app.
+  // Keep this endpoint isolated from merchant/admin actions and session handling.
+  if(req.method==='GET' && action==='notifications-poll') {
+    const expectedKey='CGpaePlGggaL4_NQ6fJkqEir1Yqvt4E-e4IRNH1NrNU';
+    const suppliedKey=safe(body.key);
+    if(suppliedKey.length!==expectedKey.length || !crypto.timingSafeEqual(Buffer.from(suppliedKey),Buffer.from(expectedKey))) {
+      return json(res,404,{error:'غير موجود'});
+    }
+    res.setHeader('Cache-Control','no-store, max-age=0');
+    try {
+      const state=await load();
+      const cutoff=Date.now()-7*24*60*60*1000;
+      const adminUrl='https://wadi-tabin-net.vercel.app/admin.html';
+      const notices=[];
+      const recent=(state.transactions||[]).filter(t=>t.createdAt && Date.parse(t.createdAt)>=cutoff);
+
+      // Notify the manager about each recent merchant balance recharge.
+      for(const t of recent.filter(x=>x.type==='balance-credit').slice(-20)) {
+        const user=state.users.find(x=>x.id===t.userId);
+        notices.push({
+          title:'شحن رصيد تاجر',
+          body:'تم شحن رصيد '+(user?.name||user?.username||t.username||'تاجر')+' بمبلغ '+Math.abs(Number(t.amount)||0)+' ريال. الرصيد الحالي '+Number(t.balanceAfter||0)+' ريال.',
+          url:adminUrl+'?notification='+encodeURIComponent('recharge-'+t.id)
+        });
+      }
+
+      // Notify only when a merchant balance crosses down to 3000 YER or less.
+      for(const user of state.users||[]) {
+        const history=(state.transactions||[]).filter(t=>t.userId===user.id&&t.createdAt)
+          .sort((a,b)=>Date.parse(a.createdAt)-Date.parse(b.createdAt));
+        let previous=null;
+        for(const t of history) {
+          const next=Number(t.balanceAfter);
+          if(!Number.isFinite(next)) continue;
+          const firstOpeningCredit=previous===null&&t.type==='balance-credit';
+          if(next<=3000&&(previous>3000||firstOpeningCredit)&&Date.parse(t.createdAt)>=cutoff) {
+            notices.push({
+              title:'تنبيه انخفاض رصيد التاجر',
+              body:'وصل رصيد '+(user.name||user.username||'التاجر')+' إلى '+next+' ريال.',
+              url:adminUrl+'?notification='+encodeURIComponent('low-balance-'+t.id)
+            });
+          }
+          previous=next;
+        }
+      }
+
+      // Notify when a package has fewer than 3 available cards.
+      for(const pkg of state.packages||[]) {
+        const available=(state.cards||[]).filter(c=>c.packageId===pkg.id&&c.status==='available').length;
+        if(available<3) {
+          const latestSale=(state.cards||[]).filter(c=>c.packageId===pkg.id&&c.status==='sold')
+            .sort((a,b)=>Date.parse(b.soldAt||0)-Date.parse(a.soldAt||0))[0];
+          const eventId=latestSale?.id||('initial-'+pkg.id+'-'+available);
+          notices.push({
+            title:'تنبيه انخفاض مخزون الباقة',
+            body:'الباقة '+(pkg.name||'بدون اسم')+' متبقي منها '+available+' كرت فقط.',
+            url:adminUrl+'?notification='+encodeURIComponent('low-stock-'+eventId)
+          });
+        }
+      }
+      return json(res,200,notices.slice(-5));
+    } catch(e) {
+      console.error('wadi-tabin notifications poll error',e);
+      return json(res,200,[]);
+    }
+  }
   const current=readSession(req);
   try {
     if(action==='login'||action==='login-admin'||action==='login-merchant') {
