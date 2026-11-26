@@ -117,7 +117,7 @@ export default async function handler(req,res) {
     const state=await load();
     if(action==='pdf-preview'&&current.role==='admin') {
       const raw=String(body.pdfData||'');
-      const match=raw.match(/^data:application\\/pdf;base64,([A-Za-z0-9+/=]+)$/);
+      const match=raw.match(/^data:application\/pdf;base64,([A-Za-z0-9+/=]+)$/);
       if(!match)return json(res,400,{error:'ملف PDF غير صالح'});
       const buffer=Buffer.from(match[1],'base64');
       if(!buffer.length||buffer.length>8*1024*1024)return json(res,413,{error:'حجم ملف PDF يجب ألا يتجاوز 8 ميجابايت'});
