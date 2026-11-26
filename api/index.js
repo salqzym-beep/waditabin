@@ -122,8 +122,8 @@ export default async function handler(req,res) {
       const buffer=Buffer.from(match[1],'base64');
       if(!buffer.length||buffer.length>8*1024*1024)return json(res,413,{error:'حجم ملف PDF يجب ألا يتجاوز 8 ميجابايت'});
       const parsed=await pdfParse(buffer);
-      const lines=String(parsed.text||'').split(/\\r?\\n/).map(x=>x.trim()).filter(Boolean);
-      const usernames=lines.filter(x=>x.length<=100&&!/^\\d+$/.test(x)&&!/(اسم المستخدم|username|password|كلمة المرور|page \\d+)/i.test(x));
+      const lines=String(parsed.text||'').split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+      const usernames=lines.filter(x=>x.length<=100&&!/^\d+$/.test(x)&&!/(اسم المستخدم|username|password|كلمة المرور|page \d+)/i.test(x));
       if(!usernames.length)return json(res,422,{error:'لم أجد أسماء مستخدمين واضحة داخل PDF'});
       return json(res,200,{ok:true,usernames,total:usernames.length});
     }
