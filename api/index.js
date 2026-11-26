@@ -1,7 +1,6 @@
 import { put, get, head } from '@vercel/blob';
 import crypto from 'node:crypto';
 import { promisify } from 'node:util';
-import pdfParse from 'pdf-parse';
 
 const scrypt = promisify(crypto.scrypt);
 const KEY = process.env.DATA_KEY || 'wadi-tabin/database/state.json';
@@ -121,6 +120,7 @@ export default async function handler(req,res) {
       if(!match)return json(res,400,{error:'ملف PDF غير صالح'});
       const buffer=Buffer.from(match[1],'base64');
       if(!buffer.length||buffer.length>8*1024*1024)return json(res,413,{error:'حجم ملف PDF يجب ألا يتجاوز 8 ميجابايت'});
+      const { default: pdfParse } = await import('pdf-parse');
       const parsed=await pdfParse(buffer);
       const lines=String(parsed.text||'').split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
       const usernames=lines.filter(x=>x.length<=100&&!/^\d+$/.test(x)&&!/(اسم المستخدم|username|password|كلمة المرور|page \d+)/i.test(x));
