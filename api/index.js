@@ -224,6 +224,12 @@ export default async function handler(req,res) {
         state.transactions=[];
         await save(state);return json(res,200,{ok:true,deleted:count});
       }
+      if(operation==='transaction-delete') {
+        const transaction=state.transactions.find(x=>x.id===body.id);
+        if(!transaction)return json(res,404,{error:'الحركة غير موجودة أو سبق حذفها'});
+        state.transactions=state.transactions.filter(x=>x.id!==body.id);
+        await save(state);return json(res,200,{ok:true,deleted:1});
+      }
       if(operation==='package-create') {
         const customerPrice=Number(body.customerPrice), merchantPrice=Number(body.merchantPrice);
         if(!safe(body.name)||!Number.isFinite(customerPrice)||!Number.isFinite(merchantPrice)||customerPrice<0||merchantPrice<0)return json(res,400,{error:'بيانات الباقة أو الأسعار غير صحيحة'});
