@@ -141,13 +141,13 @@ export default async function handler(req,res) {
     if(action==='admin-action'&&current.role==='admin') {
       const operation=safe(body.operation);
       if(operation==='login-ad-image-upload') {
-        const match=String(body.imageData||'').match(/^data:(image\\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/);
+        const data=String(body.imageData||''),comma=data.indexOf(','),header=data.slice(0,comma),mime=header.slice(5),payload=data.slice(comma+1);if(comma<0||!['image/jpeg','image/png','image/webp'].includes(mime)||!header.endsWith(';base64')||!/^[A-Za-z0-9+/=]+$/.test(payload))return json(res,400,{error:'صيغة الصورة غير صحيحة'});
         if(!match)return json(res,400,{error:'صيغة الصورة غير صحيحة'});
-        const bytes=Buffer.from(match[2],'base64');
+        const bytes=Buffer.from(payload,'base64');
         if(!bytes.length||bytes.length>3*1024*1024)return json(res,400,{error:'حجم الصورة يجب ألا يتجاوز 3 ميجابايت'});
-        const ext=match[1]==='image/jpeg'?'jpg':match[1].split('/')[1];
-        const result=await put('wadi-tabin/ads/merchant-login.'+ext,bytes,{access:'private',addRandomSuffix:false,allowOverwrite:true,contentType:match[1],token:process.env.BLOB_READ_WRITE_TOKEN});
-        state.loginAdvertisement={...(state.loginAdvertisement||{}),imagePath:result.pathname,imageType:match[1],updatedAt:new Date().toISOString()};
+        const ext=mime==='image/jpeg'?'jpg':mime.split('/')[1];
+        const result=await put('wadi-tabin/ads/merchant-login.'+ext,bytes,{access:'private',addRandomSuffix:false,allowOverwrite:true,contentType:mime,token:process.env.BLOB_READ_WRITE_TOKEN});
+        state.loginAdvertisement={...(state.loginAdvertisement||{}),imagePath:result.pathname,imageType:mime,updatedAt:new Date().toISOString()};
         await save(state);return json(res,200,{ok:true});
       }
       if(operation==='login-ad-image-remove') {if(state.loginAdvertisement){delete state.loginAdvertisement.imagePath;delete state.loginAdvertisement.imageType;state.loginAdvertisement.updatedAt=new Date().toISOString();await save(state)}return json(res,200,{ok:true})}
