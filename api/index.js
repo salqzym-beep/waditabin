@@ -119,13 +119,17 @@ export default async function handler(req,res) {
       if(!bytes.length||bytes.length>3*1024*1024)return json(res,413,{error:'السند فارغ أو أكبر من 3MB'});
       const proof='wadi-tabin/proofs/'+id();
       const blob=await put(proof,bytes,{access:'private',addRandomSuffix:false,contentType:body.proofType||'application/octet-stream',token:process.env.BLOB_READ_WRITE_TOKEN});
-      state.requests.push({id:id(),name:safe(body.name),phone:safe(body.phone),username,passwordHash:await hash(password),role:body.role==='merchant'?'merchant':'customer',proofUrl:blob.url,proofName:safe(body.proofName),status:'pending',createdAt:new Date().toISOString()});
+      state.requests.push({id:id(),name:safe(body.name),phone:safe(body.phone),username,passwordHash:await hash(password),role:'merchant',proofUrl:blob.url,proofName:safe(body.proofName),status:'pending',createdAt:new Date().toISOString()});
       await save(state);
       return json(res,200,{ok:true,message:'تم إرسال الطلب للمراجعة'});
     }
     if(!current)return json(res,401,{error:'يرجى تسجيل الدخول'});
     const state=await load();
     if(action==='admin-data'&&current.role==='admin') {
+      let rolesChanged=false;
+      for(const u of state.users){if(u.role!=='merchant'){u.role='merchant';rolesChanged=true;}}
+      for(const r of state.requests){if(r.role!=='merchant'){r.role='merchant';rolesChanged=true;}}
+      if(rolesChanged)await save(state);
       const userNames=new Map(state.users.map(u=>[u.id,u.username]));
       const transactions=state.transactions.map(t=>({...t,username:t.username||userNames.get(t.userId)||'—'}));
       return json(res,200,{ok:true,state:{...state,transactions,requests:[...state.requests].sort((a,b)=>(a.status==='pending'?-1:1)-(b.status==='pending'?-1:1)).map(cleanUser),users:state.users.map(cleanUser)}});
@@ -190,7 +194,7 @@ export default async function handler(req,res) {
         const user=state.users.find(x=>x.id===body.id);
         if(!user)return json(res,404,{error:'الحساب غير موجود'});
         const name=safe(body.name), phone=safe(body.phone), username=safe(body.username);
-        const balance=Number(body.balance), role=body.role==='merchant'?'merchant':'customer';
+        const balance=Number(body.balance), role='merchant';
         if(!name||!username||!Number.isFinite(balance)||balance<0)return json(res,400,{error:'تحقق من الاسم واسم المستخدم والرصيد'});
         if(state.users.some(x=>x.id!==user.id&&x.username===username))return json(res,409,{error:'اسم المستخدم مستخدم لحساب آخر'});
         const previousBalance=Number(user.balance||0); user.name=name; user.phone=phone; user.username=username; user.role=role; user.balance=balance;
@@ -204,8 +208,21 @@ export default async function handler(req,res) {
         const username=safe(body.username), password=String(body.password||''), balance=Number(body.balance||0);
         if(!username||password.length<8||!safe(body.name)||!Number.isFinite(balance)||balance<0)return json(res,400,{error:'تحقق من البيانات وكلمة المرور والرصيد'});
         if(state.users.some(x=>x.username===username)||state.requests.some(x=>x.username===username))return json(res,409,{error:'اسم المستخدم موجود'});
-        const createdUser={id:id(),name:safe(body.name),phone:safe(body.phone),username,passwordHash:await hash(password),role:body.role==='merchant'?'merchant':'customer',status:'active',balance,createdAt:new Date().toISOString()}; state.users.push(createdUser); if(balance>0)state.transactions.push({id:id(),userId:createdUser.id,type:'balance-credit',amount:balance,balanceAfter:balance,note:'رصيد افتتاحي عند إنشاء الحساب',createdAt:new Date().toISOString()});
+        const createdUser={id:id(),name:safe(body.name),phone:safe(body.phone),username,passwordHash:await hash(password),role:'merchant',status:'active',balance,createdAt:new Date().toISOString()}; state.users.push(createdUser); if(balance>0)state.transactions.push({id:id(),userId:createdUser.id,type:'balance-credit',amount:balance,balanceAfter:balance,note:'رصيد افتتاحي عند إنشاء الحساب',createdAt:new Date().toISOString()});
         await save(state); return json(res,200,{ok:true});
+      }
+      if(operation==='user-delete') {
+        const user=state.users.find(x=>x.id===body.id);
+        if(!user)return json(res,404,{error:'الحساب غير موجود'});
+        for(const t of state.transactions){if(t.userId===user.id){if(!t.username)t.username=user.username;t.accountDeleted=true;}}
+        for(const c of state.cards){if(c.ownerId===user.id){if(!c.ownerUsername)c.ownerUsername=user.username;c.accountDeleted=true;}}
+        state.users=state.users.filter(x=>x.id!==user.id);
+        await save(state);return json(res,200,{ok:true,message:'تم حذف الحساب مع الحفاظ على سجل حركاته والكروت التاريخية'});
+      }
+      if(operation==='transactions-clear') {
+        const count=state.transactions.length;
+        state.transactions=[];
+        await save(state);return json(res,200,{ok:true,deleted:count});
       }
       if(operation==='package-create') {
         const customerPrice=Number(body.customerPrice), merchantPrice=Number(body.merchantPrice);
