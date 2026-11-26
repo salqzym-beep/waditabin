@@ -92,15 +92,17 @@ export default async function handler(req,res) {
   const action=safe(body.action);
   const current=readSession(req);
   try {
-    if(action==='login') {
+    if(action==='login'||action==='login-admin'||action==='login-merchant') {
       const username=safe(body.username), password=String(body.password||'');
+      const requestedRole=action==='login-admin'?'admin':action==='login-merchant'?'merchant':'';
       let user=null;
-      if(await adminOk(username,password)) user={id:'admin',username,name:'مدير النظام',role:'admin',balance:0};
-      else {
-        const state=await load(), passwordHash=await hash(password);
-        user=state.users.find(x=>x.username===username&&x.status==='active'&&(x.role==='merchant'||state.transactions.some(t=>t.userId===x.id&&t.type==='merchant-sale'))&&x.passwordHash===passwordHash);
+      if(requestedRole!=='merchant' && await adminOk(username,password)) {
+        user={id:'admin',username,name:'مدير النظام',role:'admin',balance:0};
+      } else if(requestedRole!=='admin') {
+        const data=await load(), passwordHash=await hash(password);
+        user=data.users.find(x=>x.username===username&&x.status==='active'&&(x.role==='merchant'||data.transactions.some(t=>t.userId===x.id&&t.type==='merchant-sale'))&&x.passwordHash===passwordHash);
       }
-      if(!user)return json(res,401,{error:'اسم المستخدم أو كلمة المرور غير صحيحة'});
+      if(!user || (requestedRole && user.role!==requestedRole))return json(res,401,{error:requestedRole==='admin'?'بيانات دخول المدير غير صحيحة':'اسم المستخدم أو كلمة المرور غير صحيحة'});
       const token=session(user);
       res.setHeader('Set-Cookie','wtn_session='+token+'; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=86400');
       return json(res,200,{ok:true,user:cleanUser(user)});
