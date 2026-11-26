@@ -43,7 +43,9 @@ async function load() {
     if(!r.stream)throw new Error('تعذر قراءة ملف قاعدة البيانات من التخزين');
     const state=JSON.parse(await new Response(r.stream).text());
     if(!state || !Array.isArray(state.users) || !Array.isArray(state.cards))throw new Error('ملف قاعدة البيانات غير صالح');
-    const result={...fresh(),...state}; Object.defineProperty(result,'_etag',{value:r.blob?.etag||undefined,writable:true,configurable:true,enumerable:false}); return result;
+    const result={...fresh(),...state};
+    Object.defineProperty(result,'_etag',{value:r.blob?.etag||undefined,writable:true,configurable:true,enumerable:false});
+    return result;
   } catch(e) {
     if(isMissingBlob(e))return fresh();
     throw e;
@@ -53,8 +55,7 @@ async function save(state) {
   const write = async () => {
     const result=await put(KEY,JSON.stringify(state),{
       access:'private',addRandomSuffix:false,allowOverwrite:true,
-      contentType:'application/json',token:process.env.BLOB_READ_WRITE_TOKEN,
-      ...(state._etag && process.env.BLOB_DISABLE_ETAG!=='true'?{ifMatch:state._etag}:{})
+      contentType:'application/json',token:process.env.BLOB_READ_WRITE_TOKEN
     });
     Object.defineProperty(state,'_etag',{value:result.etag,writable:true,configurable:true,enumerable:false});
     return result;
@@ -97,6 +98,8 @@ export default async function handler(req,res) {
     }
     if(action==='logout') {
       res.setHeader('Set-Cookie','wtn_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0');
+      res.setHeader('Cache-Control','no-store, max-age=0');
+      if(req.method==='GET') { res.statusCode=303; res.setHeader('Location','/index.html?logged_out=1'); return res.end(); }
       return json(res,200,{ok:true});
     }
     if(action==='signup') {
@@ -114,12 +117,25 @@ export default async function handler(req,res) {
     if(!current)return json(res,401,{error:'يرجى تسجيل الدخول'});
     const state=await load();
     if(action==='admin-data'&&current.role==='admin') {
-      return json(res,200,{ok:true,state:{...state,requests:[...state.requests].sort((a,b)=>(a.status==='pending'?-1:1)-(b.status==='pending'?-1:1)).map(cleanUser),users:state.users.map(cleanUser)}});
+      const userNames=new Map(state.users.map(u=>[u.id,u.username]));
+      const transactions=state.transactions.map(t=>({...t,username:t.username||userNames.get(t.userId)||'—'}));
+      return json(res,200,{ok:true,state:{...state,transactions,requests:[...state.requests].sort((a,b)=>(a.status==='pending'?-1:1)-(b.status==='pending'?-1:1)).map(cleanUser),users:state.users.map(cleanUser)}});
     }
     if(action==='portal-data') {
       const user=state.users.find(x=>x.id===current.id);
       if(!user)return json(res,404,{error:'الحساب غير موجود'});
-      return json(res,200,{ok:true,user:cleanUser(user),state:{packages:state.packages,cards:state.cards.filter(c=>c.ownerId===user.id),transactions:state.transactions.filter(t=>t.userId===user.id)}});
+      // Recovery guard: a recorded merchant sale is proof this account was configured as a merchant.
+      // Restore only the role flag; never alter balance, cards, or transaction history.
+      const hasMerchantSale=state.transactions.some(t=>t.userId===user.id&&t.type==='merchant-sale');
+      // Trust either the saved account role or the authenticated session role.
+      // This repairs a stale/mismatched role without touching wallet or sales data.
+      const isMerchant=user.role==='merchant'||current.role==='merchant'||hasMerchantSale;
+      if(isMerchant&&user.role!=='merchant') {
+        user.role='merchant';
+        await save(state);
+      }
+      const publicUser={...cleanUser(user),role:isMerchant?'merchant':user.role};
+      return json(res,200,{ok:true,user:publicUser,isMerchant,state:{packages:state.packages,cards:state.cards.filter(c=>c.ownerId===user.id),transactions:state.transactions.filter(t=>t.userId===user.id).sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)))}});
     }
     if(action==='admin-action'&&current.role==='admin') {
       const operation=safe(body.operation);
@@ -131,8 +147,9 @@ export default async function handler(req,res) {
           if(!Number.isFinite(balance)||balance<0)return json(res,400,{error:'الرصيد غير صحيح'});
           if(state.users.some(x=>x.username===request.username))return json(res,409,{error:'الحساب موجود مسبقاً'});
           const approvedPassword=String(body.newPassword||'');
-          if(approvedPassword && approvedPassword.length<8)return json(res,400,{error:'كلمة المرور الجديدة يجب ألا تقل عن 8 أحرف'});
-          state.users.push({id:id(),name:request.name,phone:request.phone,username:request.username,passwordHash:approvedPassword?await hash(approvedPassword):request.passwordHash,role:request.role,status:'active',balance,createdAt:new Date().toISOString()});
+          if(approvedPassword.length<8)return json(res,400,{error:'عيّن كلمة مرور جديدة لا تقل عن 8 أحرف قبل التفعيل؛ لا يمكن استرجاع كلمة المرور القديمة'});
+          state.users.push({id:id(),name:request.name,phone:request.phone,username:request.username,passwordHash:await hash(approvedPassword),role:request.role,status:'active',balance,createdAt:new Date().toISOString()});
+          if(balance>0)state.transactions.push({id:id(),userId:state.users[state.users.length-1].id,type:'balance-credit',amount:balance,balanceAfter:balance,note:'رصيد افتتاحي عند تفعيل الحساب',createdAt:new Date().toISOString()});
         }
         request.status=operation==='approve'?'approved':'rejected';
         await save(state);
@@ -145,7 +162,8 @@ export default async function handler(req,res) {
         const balance=Number(body.balance), role=body.role==='merchant'?'merchant':'customer';
         if(!name||!username||!Number.isFinite(balance)||balance<0)return json(res,400,{error:'تحقق من الاسم واسم المستخدم والرصيد'});
         if(state.users.some(x=>x.id!==user.id&&x.username===username))return json(res,409,{error:'اسم المستخدم مستخدم لحساب آخر'});
-        user.name=name; user.phone=phone; user.username=username; user.role=role; user.balance=balance;
+        const previousBalance=Number(user.balance||0); user.name=name; user.phone=phone; user.username=username; user.role=role; user.balance=balance;
+        if(balance!==previousBalance)state.transactions.push({id:id(),userId:user.id,type:balance>previousBalance?'balance-credit':'balance-debit',amount:balance-previousBalance,balanceAfter:balance,note:'تعديل رصيد بواسطة المدير',createdAt:new Date().toISOString()});
         if(body.status==='active'||body.status==='suspended')user.status=body.status;
         const newPassword=String(body.newPassword||'');
         if(newPassword){if(newPassword.length<8)return json(res,400,{error:'كلمة المرور يجب ألا تقل عن 8 أحرف'});user.passwordHash=await hash(newPassword);}
@@ -155,7 +173,7 @@ export default async function handler(req,res) {
         const username=safe(body.username), password=String(body.password||''), balance=Number(body.balance||0);
         if(!username||password.length<8||!safe(body.name)||!Number.isFinite(balance)||balance<0)return json(res,400,{error:'تحقق من البيانات وكلمة المرور والرصيد'});
         if(state.users.some(x=>x.username===username)||state.requests.some(x=>x.username===username))return json(res,409,{error:'اسم المستخدم موجود'});
-        state.users.push({id:id(),name:safe(body.name),phone:safe(body.phone),username,passwordHash:await hash(password),role:body.role==='merchant'?'merchant':'customer',status:'active',balance,createdAt:new Date().toISOString()});
+        const createdUser={id:id(),name:safe(body.name),phone:safe(body.phone),username,passwordHash:await hash(password),role:body.role==='merchant'?'merchant':'customer',status:'active',balance,createdAt:new Date().toISOString()}; state.users.push(createdUser); if(balance>0)state.transactions.push({id:id(),userId:createdUser.id,type:'balance-credit',amount:balance,balanceAfter:balance,note:'رصيد افتتاحي عند إنشاء الحساب',createdAt:new Date().toISOString()});
         await save(state); return json(res,200,{ok:true});
       }
       if(operation==='package-create') {
@@ -164,29 +182,44 @@ export default async function handler(req,res) {
         state.packages.push({id:id(),name:safe(body.name),customerPrice,merchantPrice,active:true});
         await save(state); return json(res,200,{ok:true});
       }
-      if(operation==='stock-add') {
-        const pkg=state.packages.find(x=>x.id===body.packageId);
-        if(!pkg)return json(res,400,{error:'اختر باقة صحيحة'});
-        const codes=String(body.codes||'').split(/[\n,;]+/).map(safe).filter(Boolean);
-        const seen=new Set(state.cards.map(c=>c.code)); let added=0,duplicates=0;
-        for(const code of codes){if(seen.has(code)){duplicates++;continue;}seen.add(code);state.cards.push({id:id(),code,packageId:pkg.id,status:'available'});added++;}
-        if(!added)return json(res,400,{error:'لم تتم إضافة كروت جديدة؛ تحقق من الأكواد أو التكرار'});
-        await save(state); return json(res,200,{ok:true,added,duplicates});
+      if(operation==='balance-adjust') {
+        const user=state.users.find(x=>x.id===body.id);
+        const amount=Number(body.amount), direction=body.direction==='debit'?'debit':'credit', note=safe(body.note)||'تعديل رصيد بواسطة المدير';
+        if(!user)return json(res,404,{error:'الحساب غير موجود'});
+        if(!Number.isFinite(amount)||amount<=0)return json(res,400,{error:'أدخل مبلغاً صحيحاً أكبر من صفر'});
+        const previous=Number(user.balance||0), delta=direction==='credit'?amount:-amount, next=previous+delta;
+        if(next<0)return json(res,400,{error:'لا يمكن أن يصبح الرصيد بالسالب'});
+        user.balance=next;
+        state.transactions.push({id:id(),userId:user.id,type:direction==='credit'?'balance-credit':'balance-debit',amount:delta,balanceAfter:next,note,createdAt:new Date().toISOString()});
+        await save(state);return json(res,200,{ok:true,balance:next});
       }
-
+      if(operation==='package-update') {
+        const pkg=state.packages.find(x=>x.id===body.id);
+        if(!pkg)return json(res,404,{error:'الباقة غير موجودة'});
+        const name=safe(body.name), customerPrice=Number(body.customerPrice), merchantPrice=Number(body.merchantPrice);
+        if(!name||!Number.isFinite(customerPrice)||!Number.isFinite(merchantPrice)||customerPrice<0||merchantPrice<0)return json(res,400,{error:'تحقق من اسم الباقة وأسعارها'});
+        pkg.name=name;pkg.customerPrice=customerPrice;pkg.merchantPrice=merchantPrice;
+        if(body.active==='true'||body.active===true)pkg.active=true;
+        if(body.active==='false'||body.active===false)pkg.active=false;
+        await save(state);return json(res,200,{ok:true});
+      }
       if(operation==='package-delete') {
         const pkg=state.packages.find(x=>x.id===body.id);
         if(!pkg)return json(res,404,{error:'الباقة غير موجودة'});
-        if(state.cards.some(c=>c.packageId===pkg.id))return json(res,409,{error:'لا يمكن حذف الباقة لارتباطها بكروت. احذف كروت المخزون أولاً.'});
+        if(state.cards.some(x=>x.packageId===pkg.id))return json(res,409,{error:'لا يمكن حذف باقة مرتبطة بكروت أو سجل سابق. يمكنك إيقافها من التعديل بدلاً من حذفها.'});
         state.packages=state.packages.filter(x=>x.id!==pkg.id);
-        await save(state); return json(res,200,{ok:true});
+        await save(state);return json(res,200,{ok:true});
       }
-      if(operation==='stock-delete') {
-        const card=state.cards.find(x=>x.id===body.id);
-        if(!card)return json(res,404,{error:'الكرت غير موجود'});
-        if(card.status!=='available'||card.ownerId)return json(res,409,{error:'لا يمكن حذف كرت تم بيعه أو تخصيصه'});
-        state.cards=state.cards.filter(x=>x.id!==card.id);
-        await save(state); return json(res,200,{ok:true});
+      if(operation==='stock-add') {
+        const pkg=state.packages.find(x=>x.id===body.packageId);
+        if(!pkg)return json(res,400,{error:'اختر باقة صحيحة'});
+        const codes=String(body.codes||'').split(/[\n,;\t ]+/).map(safe).filter(Boolean);
+        if(!codes.length)return json(res,400,{error:'اكتب الأكواد أولاً'});
+        if(codes.length>5000)return json(res,413,{error:'الحد الأقصى 5000 كرت في العملية الواحدة'});
+        const seen=new Set(state.cards.map(c=>String(c.code).toUpperCase()));let added=0,duplicates=0;
+        for(const code of codes){const key=code.toUpperCase();if(seen.has(key)){duplicates++;continue;}seen.add(key);state.cards.push({id:id(),code,packageId:pkg.id,status:'available'});added++;}
+        if(!added)return json(res,400,{error:'كل الأكواد مكررة؛ لم تتم إضافة أي كرت'});
+        await save(state);return json(res,200,{ok:true,added,duplicates,packageName:pkg.name});
       }
       return json(res,400,{error:'عملية المدير غير مدعومة'});
     }
@@ -197,12 +230,24 @@ export default async function handler(req,res) {
       const price=Number(pkg.customerPrice);
       if(!Number.isFinite(price)||price<0||user.balance<price)return json(res,400,{error:'الرصيد غير كافٍ أو سعر الباقة غير صحيح'});
       user.balance-=price; card.status='sold'; card.ownerId=user.id;
-      state.transactions.push({id:id(),userId:user.id,type:'purchase',amount:-price,createdAt:new Date().toISOString()});
+      state.transactions.push({id:id(),userId:user.id,type:'purchase',amount:-price,balanceAfter:user.balance,packageName:pkg.name,cardCode:card.code,note:'شراء كرت من المحفظة',createdAt:new Date().toISOString()});
       await save(state); return json(res,200,{ok:true,card:{code:card.code},balance:user.balance});
     }
     if(action==='merchant-sale') {
-      if(current.role!=='merchant')return json(res,403,{error:'هذه العملية للتجار'});
-      return json(res,501,{error:'بيع التاجر لم يكتمل بعد؛ لم يتم خصم أي رصيد'});
+      const user=state.users.find(x=>x.id===current.id);
+      if(!user||user.role!=='merchant')return json(res,403,{error:'هذا الحساب غير مفعّل كتاجر. حدّث الصفحة بعد تعديل نوع الحساب من لوحة المدير.'});
+      const customerName=safe(body.customerName), phone=safe(body.phone), packageId=safe(body.packageId);
+      const pkg=state.packages.find(x=>x.id===packageId&&x.active!==false);
+      const card=state.cards.find(c=>c.packageId===packageId&&c.status==='available');
+      if(!user||!customerName||!phone||!pkg)return json(res,400,{error:'أدخل اسم العميل ورقم جواله واختر الباقة'});
+      if(!card)return json(res,400,{error:'لا توجد كروت متاحة لهذه الباقة'});
+      const cost=Number(pkg.merchantPrice);
+      if(!Number.isFinite(cost)||cost<0||Number(user.balance)<cost)return json(res,400,{error:'رصيد التاجر غير كافٍ'});
+      user.balance=Number(user.balance)-cost;
+      card.status='sold';card.ownerId=user.id;card.customerName=customerName;card.customerPhone=phone;card.soldAt=new Date().toISOString();
+      state.transactions.push({id:id(),userId:user.id,type:'merchant-sale',amount:-cost,balanceAfter:user.balance,customerName,phone,packageName:pkg.name,cardCode:card.code,note:'بيع كرت للعميل '+customerName,createdAt:new Date().toISOString()});
+      await save(state);
+      return json(res,200,{ok:true,card:{code:card.code},balance:user.balance,customerName,phone,packageName:pkg.name,merchantCost:cost,customerPrice:Number(pkg.customerPrice),profit:Number(pkg.customerPrice)-cost});
     }
     return json(res,400,{error:'عملية غير معروفة'});
   } catch(e) {
