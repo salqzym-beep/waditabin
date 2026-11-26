@@ -257,13 +257,31 @@ export default async function handler(req,res) {
         const user=state.users.find(x=>x.id===body.id);
         if(!user)return json(res,404,{error:'حساب التاجر غير موجود'});
         if(user.role!=='merchant'&&!state.transactions.some(t=>t.userId===user.id&&t.type==='merchant-sale'))return json(res,403,{error:'هذا الحساب ليس حساب تاجر'});
-        if(Number(user.balance||0)!==0)return json(res,409,{error:'لا يمكن حذف التاجر قبل تسوية رصيده. الرصيد الحالي: '+Number(user.balance||0)});
-        const username=user.username||'—', merchantName=user.name||username;
-        for(const t of state.transactions)if(t.userId===user.id){t.merchantName=merchantName;t.merchantUsername=username;}
-        for(const card of state.cards)if(card.ownerId===user.id){card.ownerName=merchantName;card.ownerUsername=username;}
+        // Full account removal: remove the merchant and their transaction history.
+        // Keep sold voucher cards as sold inventory records, but detach the deleted account.
         state.users=state.users.filter(x=>x.id!==user.id);
+        state.transactions=state.transactions.filter(t=>t.userId!==user.id);
+        for(const card of state.cards)if(card.ownerId===user.id){delete card.ownerId;delete card.ownerName;delete card.ownerUsername;}
         await save(state);
-        return json(res,200,{ok:true,message:'تم حذف الحساب مع الاحتفاظ بالسجلات والكروت السابقة'});
+        return json(res,200,{ok:true,message:'تم حذف حساب التاجر وسجل حركاته'});
+      }
+      if(operation==='transactions-clear-user') {
+        const userId=safe(body.id);
+        if(!userId)return json(res,400,{error:'معرّف التاجر غير صحيح'});
+        const count=state.transactions.filter(t=>t.userId===userId).length;
+        state.transactions=state.transactions.filter(t=>t.userId!==userId);
+        await save(state);
+        return json(res,200,{ok:true,deleted:count});
+      }
+      if(operation==='package-cards-clear') {
+        const packageId=safe(body.id);
+        const pkg=state.packages.find(x=>x.id===packageId);
+        if(!pkg)return json(res,404,{error:'الباقة غير موجودة'});
+        const before=state.cards.length;
+        state.cards=state.cards.filter(card=>card.packageId!==packageId);
+        const deleted=before-state.cards.length;
+        await save(state);
+        return json(res,200,{ok:true,deleted,packageName:pkg.name});
       }
       if(operation==='transactions-clear') {
         const count=state.transactions.length;state.transactions=[];await save(state);
