@@ -112,7 +112,8 @@ export default async function handler(req,res) {
         notices.push({
           title:'شحن رصيد تاجر',
           body:'تم شحن رصيد '+(user?.name||user?.username||t.username||'تاجر')+' بمبلغ '+Math.abs(Number(t.amount)||0)+' ريال. الرصيد الحالي '+Number(t.balanceAfter||0)+' ريال.',
-          url:adminUrl+'?notification='+encodeURIComponent('recharge-'+t.id)
+          url:adminUrl+'?notification='+encodeURIComponent('recharge-'+t.id),
+          _at:Date.parse(t.createdAt)||0
         });
       }
 
@@ -129,7 +130,8 @@ export default async function handler(req,res) {
             notices.push({
               title:'تنبيه انخفاض رصيد التاجر',
               body:'وصل رصيد '+(user.name||user.username||'التاجر')+' إلى '+next+' ريال.',
-              url:adminUrl+'?notification='+encodeURIComponent('low-balance-'+t.id)
+              url:adminUrl+'?notification='+encodeURIComponent('low-balance-'+t.id),
+              _at:Date.parse(t.createdAt)||0
             });
           }
           previous=next;
@@ -138,6 +140,7 @@ export default async function handler(req,res) {
 
       // Notify when a package has fewer than 3 available cards.
       for(const pkg of state.packages||[]) {
+        if(pkg.active===false) continue;
         const available=(state.cards||[]).filter(c=>c.packageId===pkg.id&&c.status==='available').length;
         if(available<3) {
           const latestSale=(state.cards||[]).filter(c=>c.packageId===pkg.id&&c.status==='sold')
@@ -146,11 +149,13 @@ export default async function handler(req,res) {
           notices.push({
             title:'تنبيه انخفاض مخزون الباقة',
             body:'الباقة '+(pkg.name||'بدون اسم')+' متبقي منها '+available+' كرت فقط.',
-            url:adminUrl+'?notification='+encodeURIComponent('low-stock-'+eventId)
+            url:adminUrl+'?notification='+encodeURIComponent('low-stock-'+eventId),
+            _at:Date.parse(latestSale?.soldAt||'')||Date.now()
           });
         }
       }
-      return json(res,200,notices.slice(-5));
+      const latest=notices.sort((a,b)=>(b._at||0)-(a._at||0)).slice(0,5).map(({title,body,url})=>({title,body,url}));
+      return json(res,200,latest);
     } catch(e) {
       console.error('wadi-tabin notifications poll error',e);
       return json(res,200,[]);
