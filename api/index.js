@@ -83,8 +83,6 @@ export default async function handler(req,res) {
   if(req.method==='GET' && req.query?.action==='health') {
     return json(res,200,{ok:true,storage:!!process.env.BLOB_READ_WRITE_TOKEN,db:'private-blob',sessionConfigured:!!process.env.SESSION_SECRET && process.env.SESSION_SECRET.length>=32,adminConfigured:!!process.env.ADMIN_USERNAME && !!process.env.ADMIN_PASSWORD_HASH});
   }
-  if(req.method==='GET' && req.query?.action==='login-ad') {try{const state=await load();const ad=state.loginAdvertisement||{};return json(res,200,{text:ad.text||'',phone:ad.phone||'',imagePath:ad.imagePath||''})}catch(e){return json(res,500,{error:'تعذر تحميل الإعلان'})}}
-  if(req.method==='GET' && req.query?.action==='login-ad-image') {try{const state=await load();const ad=state.loginAdvertisement||{};if(!ad.imagePath)return json(res,404,{error:'لا توجد صورة'});const blob=await get(ad.imagePath,{access:'private',token:process.env.BLOB_READ_WRITE_TOKEN,useCache:false});if(!blob?.stream)return json(res,404,{error:'الصورة غير موجودة'});const bytes=Buffer.from(await new Response(blob.stream).arrayBuffer());res.statusCode=200;res.setHeader('Content-Type',ad.imageType||'image/jpeg');res.setHeader('Cache-Control','public, max-age=300');res.setHeader('Content-Length',bytes.length);return res.end(bytes)}catch(e){return json(res,404,{error:'تعذر عرض الصورة'})}}
   let body={};
   try {
     if(req.method==='POST') body=typeof req.body==='object'&&req.body?req.body:JSON.parse(await new Promise((resolve,reject)=>{let raw='';req.on('data',c=>raw+=c);req.on('end',()=>resolve(raw));req.on('error',reject)}));
@@ -140,33 +138,6 @@ export default async function handler(req,res) {
     }
     if(action==='admin-action'&&current.role==='admin') {
       const operation=safe(body.operation);
-      if(operation==='login-ad-image-upload') {
-        const data=String(body.imageData||''),comma=data.indexOf(','),header=data.slice(0,comma),mime=header.slice(5),payload=data.slice(comma+1);if(comma<0||!['image/jpeg','image/png','image/webp'].includes(mime)||!header.endsWith(';base64')||!/^[A-Za-z0-9+/=]+$/.test(payload))return json(res,400,{error:'صيغة الصورة غير صحيحة'});
-        
-        const bytes=Buffer.from(payload,'base64');
-        if(!bytes.length||bytes.length>3*1024*1024)return json(res,400,{error:'حجم الصورة يجب ألا يتجاوز 3 ميجابايت'});
-        const ext=mime==='image/jpeg'?'jpg':mime.split('/')[1];
-        const result=await put('wadi-tabin/ads/merchant-login.'+ext,bytes,{access:'private',addRandomSuffix:false,allowOverwrite:true,contentType:mime,token:process.env.BLOB_READ_WRITE_TOKEN});
-        state.loginAdvertisement={...(state.loginAdvertisement||{}),imagePath:result.pathname,imageType:mime,updatedAt:new Date().toISOString()};
-        await save(state);return json(res,200,{ok:true});
-      }
-      if(operation==='login-ad-image-remove') {if(state.loginAdvertisement){delete state.loginAdvertisement.imagePath;delete state.loginAdvertisement.imageType;state.loginAdvertisement.updatedAt=new Date().toISOString();await save(state)}return json(res,200,{ok:true})}
-      if(operation==='login-ad-save') {
-        const ad={...(state.loginAdvertisement||{}),text:safe(body.text),phone:safe(body.phone),updatedAt:new Date().toISOString()};
-        if(body.imageData){
-          const data=String(body.imageData),match=data.match(/^data:(image\\/(?:jpeg|png|webp));base64,([\\s\\S]+)$/i);
-          if(!match)return json(res,400,{error:'صيغة الصورة غير صحيحة: تعذر قراءة بيانات الصورة'});
-          const mime=match[1].toLowerCase(),payload=match[2].replace(/\\s/g,'');
-          if(!payload||!/^[A-Za-z0-9+/]*={0,2}$/.test(payload))return json(res,400,{error:'بيانات الصورة غير مكتملة'});
-          const bytes=Buffer.from(payload,'base64');
-          if(!bytes.length||bytes.length>3*1024*1024)return json(res,400,{error:'حجم الصورة يجب ألا يتجاوز 3 ميجابايت'});
-          const ext=mime==='image/jpeg'?'jpg':mime.split('/')[1];
-          const result=await put('wadi-tabin/ads/merchant-login.'+ext,bytes,{access:'private',addRandomSuffix:false,allowOverwrite:true,contentType:mime,token:process.env.BLOB_READ_WRITE_TOKEN});
-          ad.imagePath=result.pathname;ad.imageType=mime;
-        }
-        state.loginAdvertisement=ad;await save(state);return json(res,200,{ok:true,advertisement:{text:ad.text,phone:ad.phone,hasImage:!!ad.imagePath}});
-      }
-      if(operation==='login-ad-clear') {state.loginAdvertisement={text:'',phone:'',updatedAt:new Date().toISOString()};await save(state);return json(res,200,{ok:true})}
       if(operation==='admin-credentials-update') {
         const username=safe(body.username), currentPassword=String(body.currentPassword||''), newPassword=String(body.newPassword||'');
         if(!username || !currentPassword)return json(res,400,{error:'أدخل اسم المستخدم الحالي وكلمة المرور الحالية'});
@@ -220,7 +191,7 @@ export default async function handler(req,res) {
       if(operation==='package-create') {
         const customerPrice=Number(body.customerPrice), merchantPrice=Number(body.merchantPrice);
         if(!safe(body.name)||!Number.isFinite(customerPrice)||!Number.isFinite(merchantPrice)||customerPrice<0||merchantPrice<0)return json(res,400,{error:'بيانات الباقة أو الأسعار غير صحيحة'});
-        state.packages.push({id:id(),name:safe(body.name),customerPrice,merchantPrice,validity:safe(body.validity),size:safe(body.size),active:true});
+        state.packages.push({id:id(),name:safe(body.name),customerPrice,merchantPrice,active:true});
         await save(state); return json(res,200,{ok:true});
       }
       if(operation==='balance-adjust') {
@@ -239,7 +210,7 @@ export default async function handler(req,res) {
         if(!pkg)return json(res,404,{error:'الباقة غير موجودة'});
         const name=safe(body.name), customerPrice=Number(body.customerPrice), merchantPrice=Number(body.merchantPrice);
         if(!name||!Number.isFinite(customerPrice)||!Number.isFinite(merchantPrice)||customerPrice<0||merchantPrice<0)return json(res,400,{error:'تحقق من اسم الباقة وأسعارها'});
-        pkg.name=name;pkg.customerPrice=customerPrice;pkg.merchantPrice=merchantPrice;pkg.validity=safe(body.validity);pkg.size=safe(body.size);
+        pkg.name=name;pkg.customerPrice=customerPrice;pkg.merchantPrice=merchantPrice;
         if(body.active==='true'||body.active===true)pkg.active=true;
         if(body.active==='false'||body.active===false)pkg.active=false;
         await save(state);return json(res,200,{ok:true});
