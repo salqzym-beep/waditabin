@@ -64,9 +64,18 @@ async function save(state) {
   writeQueue=task.then(()=>undefined,()=>undefined);
   await task;
 }
-async function adminOk(username,password) {
-  if(username!==(process.env.ADMIN_USERNAME||'') || !process.env.ADMIN_PASSWORD_HASH)return false;
-  return (await hash(password))===process.env.ADMIN_PASSWORD_HASH;
+async function adminOk(username,password,state) {
+  const data=state || await load();
+  const saved=data.adminCredentials;
+  const expectedUser=saved?.username || process.env.ADMIN_USERNAME || '';
+  const expectedHash=saved?.passwordHash || process.env.ADMIN_PASSWORD_HASH || '';
+  if(!expectedUser || !expectedHash || username!==expectedUser)return false;
+  return (await hash(password))===expectedHash;
+}
+async function adminPasswordOk(password,state) {
+  const saved=state.adminCredentials;
+  const expectedHash=saved?.passwordHash || process.env.ADMIN_PASSWORD_HASH || '';
+  return !!expectedHash && (await hash(password))===expectedHash;
 }
 function cleanUser(u) { const {passwordHash,...rest}=u; return rest; }
 
@@ -139,6 +148,17 @@ export default async function handler(req,res) {
     }
     if(action==='admin-action'&&current.role==='admin') {
       const operation=safe(body.operation);
+      if(operation==='admin-credentials-update') {
+        const username=safe(body.username), currentPassword=String(body.currentPassword||''), newPassword=String(body.newPassword||'');
+        if(!username || !currentPassword)return json(res,400,{error:'أدخل اسم المستخدم الحالي وكلمة المرور الحالية'});
+        if(!await adminPasswordOk(currentPassword,state))return json(res,401,{error:'كلمة المرور الحالية غير صحيحة'});
+        if(newPassword && newPassword.length<8)return json(res,400,{error:'كلمة المرور الجديدة يجب ألا تقل عن 8 أحرف'});
+        const otherUser=state.users.some(u=>u.username===username);
+        if(otherUser)return json(res,409,{error:'اسم المستخدم مستخدم لحساب آخر'});
+        state.adminCredentials={username,passwordHash:await hash(newPassword||currentPassword)};
+        await save(state);
+        return json(res,200,{ok:true,message:'تم تحديث بيانات المدير'});
+      }
       if(operation==='approve'||operation==='reject') {
         const request=state.requests.find(x=>x.id===body.id&&x.status==='pending');
         if(!request)return json(res,404,{error:'الطلب غير موجود أو تمت معالجته مسبقاً'});
