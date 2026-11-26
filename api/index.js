@@ -98,7 +98,7 @@ export default async function handler(req,res) {
       if(await adminOk(username,password)) user={id:'admin',username,name:'مدير النظام',role:'admin',balance:0};
       else {
         const state=await load(), passwordHash=await hash(password);
-        user=state.users.find(x=>x.username===username&&x.status==='active'&&x.passwordHash===passwordHash);
+        user=state.users.find(x=>x.username===username&&x.status==='active'&&x.role==='merchant'&&x.passwordHash===passwordHash);
       }
       if(!user)return json(res,401,{error:'اسم المستخدم أو كلمة المرور غير صحيحة'});
       const token=session(user);
@@ -111,18 +111,7 @@ export default async function handler(req,res) {
       if(req.method==='GET') { res.statusCode=303; res.setHeader('Location','/index.html?logged_out=1'); return res.end(); }
       return json(res,200,{ok:true});
     }
-    if(action==='signup') {
-      const state=await load(), username=safe(body.username), password=String(body.password||'');
-      if(!username||password.length<8||!body.proofBase64||!safe(body.name)||!safe(body.phone))return json(res,400,{error:'أكمل البيانات، وكلمة المرور 8 أحرف على الأقل، وأرفق سند الإيداع'});
-      if(state.users.some(x=>x.username===username)||state.requests.some(x=>x.username===username))return json(res,409,{error:'اسم المستخدم مستخدم مسبقاً'});
-      const bytes=Buffer.from(body.proofBase64,'base64');
-      if(!bytes.length||bytes.length>3*1024*1024)return json(res,413,{error:'السند فارغ أو أكبر من 3MB'});
-      const proof='wadi-tabin/proofs/'+id();
-      const blob=await put(proof,bytes,{access:'private',addRandomSuffix:false,contentType:body.proofType||'application/octet-stream',token:process.env.BLOB_READ_WRITE_TOKEN});
-      state.requests.push({id:id(),name:safe(body.name),phone:safe(body.phone),username,passwordHash:await hash(password),role:body.role==='merchant'?'merchant':'customer',proofUrl:blob.url,proofName:safe(body.proofName),status:'pending',createdAt:new Date().toISOString()});
-      await save(state);
-      return json(res,200,{ok:true,message:'تم إرسال الطلب للمراجعة'});
-    }
+    if(action==='signup') { return json(res,403,{error:'إنشاء الحسابات يتم عن طريق إدارة الشبكة فقط'}); }
     if(!current)return json(res,401,{error:'يرجى تسجيل الدخول'});
     const state=await load();
     if(action==='admin-data'&&current.role==='admin') {
@@ -133,6 +122,7 @@ export default async function handler(req,res) {
     if(action==='portal-data') {
       const user=state.users.find(x=>x.id===current.id);
       if(!user)return json(res,404,{error:'الحساب غير موجود'});
+      if(user.role!=='merchant'&&current.role!=='merchant')return json(res,403,{error:'لوحة العملاء غير متاحة؛ هذه البوابة مخصصة للتجار فقط.'});
       // Recovery guard: a recorded merchant sale is proof this account was configured as a merchant.
       // Restore only the role flag; never alter balance, cards, or transaction history.
       const hasMerchantSale=state.transactions.some(t=>t.userId===user.id&&t.type==='merchant-sale');
@@ -163,6 +153,7 @@ export default async function handler(req,res) {
         const request=state.requests.find(x=>x.id===body.id&&x.status==='pending');
         if(!request)return json(res,404,{error:'الطلب غير موجود أو تمت معالجته مسبقاً'});
         if(operation==='approve') {
+          if(request.role!=='merchant')return json(res,403,{error:'طلبات العملاء غير مدعومة؛ يمكن تفعيل حسابات التجار فقط'});
           const balance=Number(body.balance??0);
           if(!Number.isFinite(balance)||balance<0)return json(res,400,{error:'الرصيد غير صحيح'});
           if(state.users.some(x=>x.username===request.username))return json(res,409,{error:'الحساب موجود مسبقاً'});
@@ -179,7 +170,7 @@ export default async function handler(req,res) {
         const user=state.users.find(x=>x.id===body.id);
         if(!user)return json(res,404,{error:'الحساب غير موجود'});
         const name=safe(body.name), phone=safe(body.phone), username=safe(body.username);
-        const balance=Number(body.balance), role=body.role==='merchant'?'merchant':'customer';
+        const balance=Number(body.balance), role='merchant';
         if(!name||!username||!Number.isFinite(balance)||balance<0)return json(res,400,{error:'تحقق من الاسم واسم المستخدم والرصيد'});
         if(state.users.some(x=>x.id!==user.id&&x.username===username))return json(res,409,{error:'اسم المستخدم مستخدم لحساب آخر'});
         const previousBalance=Number(user.balance||0); user.name=name; user.phone=phone; user.username=username; user.role=role; user.balance=balance;
@@ -191,6 +182,7 @@ export default async function handler(req,res) {
       }
       if(operation==='create-user') {
         const username=safe(body.username), password=String(body.password||''), balance=Number(body.balance||0);
+        if(body.role==='customer')return json(res,403,{error:'إنشاء حسابات العملاء غير متاح؛ أنشئ حساب تاجر فقط'});
         if(!username||password.length<8||!safe(body.name)||!Number.isFinite(balance)||balance<0)return json(res,400,{error:'تحقق من البيانات وكلمة المرور والرصيد'});
         if(state.users.some(x=>x.username===username)||state.requests.some(x=>x.username===username))return json(res,409,{error:'اسم المستخدم موجود'});
         const createdUser={id:id(),name:safe(body.name),phone:safe(body.phone),username,passwordHash:await hash(password),role:body.role==='merchant'?'merchant':'customer',status:'active',balance,createdAt:new Date().toISOString()}; state.users.push(createdUser); if(balance>0)state.transactions.push({id:id(),userId:createdUser.id,type:'balance-credit',amount:balance,balanceAfter:balance,note:'رصيد افتتاحي عند إنشاء الحساب',createdAt:new Date().toISOString()});
@@ -243,16 +235,7 @@ export default async function handler(req,res) {
       }
       return json(res,400,{error:'عملية المدير غير مدعومة'});
     }
-    if(action==='purchase') {
-      if(current.role!=='customer')return json(res,403,{error:'هذه العملية للعملاء'});
-      const user=state.users.find(x=>x.id===current.id), pkg=state.packages.find(x=>x.id===body.packageId&&x.active), card=state.cards.find(x=>x.packageId===body.packageId&&x.status==='available');
-      if(!user||!pkg||!card)return json(res,400,{error:'الباقة أو المخزون غير متاح'});
-      const price=Number(pkg.customerPrice);
-      if(!Number.isFinite(price)||price<0||user.balance<price)return json(res,400,{error:'الرصيد غير كافٍ أو سعر الباقة غير صحيح'});
-      user.balance-=price; card.status='sold'; card.ownerId=user.id;
-      state.transactions.push({id:id(),userId:user.id,type:'purchase',amount:-price,balanceAfter:user.balance,packageName:pkg.name,cardCode:card.code,note:'شراء كرت من المحفظة',createdAt:new Date().toISOString()});
-      await save(state); return json(res,200,{ok:true,card:{code:card.code},balance:user.balance});
-    }
+    if(action==='purchase') { return json(res,403,{error:'شراء العملاء غير متاح في هذه النسخة؛ البوابة مخصصة للتجار.'}); }
     if(action==='merchant-sale') {
       const user=state.users.find(x=>x.id===current.id);
       if(!user||user.role!=='merchant')return json(res,403,{error:'هذا الحساب غير مفعّل كتاجر. حدّث الصفحة بعد تعديل نوع الحساب من لوحة المدير.'});
