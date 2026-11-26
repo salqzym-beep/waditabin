@@ -64,9 +64,18 @@ async function save(state) {
   writeQueue=task.then(()=>undefined,()=>undefined);
   await task;
 }
-async function adminOk(username,password) {
-  if(username!==(process.env.ADMIN_USERNAME||'') || !process.env.ADMIN_PASSWORD_HASH)return false;
-  return (await hash(password))===process.env.ADMIN_PASSWORD_HASH;
+async function adminOk(username,password,state) {
+  const data=state || await load();
+  const saved=data.adminCredentials;
+  const expectedUser=saved?.username || process.env.ADMIN_USERNAME || '';
+  const expectedHash=saved?.passwordHash || process.env.ADMIN_PASSWORD_HASH || '';
+  if(!expectedUser || !expectedHash || username!==expectedUser)return false;
+  return (await hash(password))===expectedHash;
+}
+async function adminPasswordOk(password,state) {
+  const saved=state.adminCredentials;
+  const expectedHash=saved?.passwordHash || process.env.ADMIN_PASSWORD_HASH || '';
+  return !!expectedHash && (await hash(password))===expectedHash;
 }
 function cleanUser(u) { const {passwordHash,...rest}=u; return rest; }
 
@@ -135,10 +144,32 @@ export default async function handler(req,res) {
         await save(state);
       }
       const publicUser={...cleanUser(user),role:isMerchant?'merchant':user.role};
-      return json(res,200,{ok:true,user:publicUser,isMerchant,state:{packages:state.packages,cards:state.cards.filter(c=>c.ownerId===user.id),transactions:state.transactions.filter(t=>t.userId===user.id).sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)))}});
+      // Backward-compatible ownership matching: older records may have the
+      // merchant username (or legacy userId field) instead of the current ID.
+      // Match only this authenticated account; never expose another merchant's data.
+      const ownsRecord = record => {
+        const ids=[record.ownerId,record.userId,record.merchantId,record.sellerId].filter(Boolean).map(String);
+        if(ids.includes(String(user.id))) return true;
+        const names=[record.ownerUsername,record.merchantUsername,record.username,record.sellerUsername].filter(Boolean).map(v=>safe(v).toLowerCase());
+        return names.includes(safe(user.username).toLowerCase());
+      };
+      const merchantCards=state.cards.filter(c=>ownsRecord(c));
+      const merchantTransactions=state.transactions.filter(t=>ownsRecord(t) || (t.type==='merchant-sale' && safe(t.username).toLowerCase()===safe(user.username).toLowerCase()));
+      return json(res,200,{ok:true,user:publicUser,isMerchant,state:{packages:state.packages,cards:merchantCards,transactions:merchantTransactions.sort((a,b)=>String(b.createdAt||'').localeCompare(String(a.createdAt||'')))}});
     }
     if(action==='admin-action'&&current.role==='admin') {
       const operation=safe(body.operation);
+      if(operation==='admin-credentials-update') {
+        const username=safe(body.username), currentPassword=String(body.currentPassword||''), newPassword=String(body.newPassword||'');
+        if(!username || !currentPassword)return json(res,400,{error:'أدخل اسم المستخدم الحالي وكلمة المرور الحالية'});
+        if(!await adminPasswordOk(currentPassword,state))return json(res,401,{error:'كلمة المرور الحالية غير صحيحة'});
+        if(newPassword && newPassword.length<8)return json(res,400,{error:'كلمة المرور الجديدة يجب ألا تقل عن 8 أحرف'});
+        const otherUser=state.users.some(u=>u.username===username);
+        if(otherUser)return json(res,409,{error:'اسم المستخدم مستخدم لحساب آخر'});
+        state.adminCredentials={username,passwordHash:await hash(newPassword||currentPassword)};
+        await save(state);
+        return json(res,200,{ok:true,message:'تم تحديث بيانات المدير'});
+      }
       if(operation==='approve'||operation==='reject') {
         const request=state.requests.find(x=>x.id===body.id&&x.status==='pending');
         if(!request)return json(res,404,{error:'الطلب غير موجود أو تمت معالجته مسبقاً'});
@@ -244,8 +275,8 @@ export default async function handler(req,res) {
       const cost=Number(pkg.merchantPrice);
       if(!Number.isFinite(cost)||cost<0||Number(user.balance)<cost)return json(res,400,{error:'رصيد التاجر غير كافٍ'});
       user.balance=Number(user.balance)-cost;
-      card.status='sold';card.ownerId=user.id;card.customerName=customerName;card.customerPhone=phone;card.soldAt=new Date().toISOString();
-      state.transactions.push({id:id(),userId:user.id,type:'merchant-sale',amount:-cost,balanceAfter:user.balance,customerName,phone,packageName:pkg.name,cardCode:card.code,note:'بيع كرت للعميل '+customerName,createdAt:new Date().toISOString()});
+      card.status='sold';card.ownerId=user.id;card.ownerUsername=user.username;card.customerName=customerName;card.customerPhone=phone;card.soldAt=new Date().toISOString();card.packageName=pkg.name;
+      state.transactions.push({id:id(),userId:user.id,username:user.username,type:'merchant-sale',amount:-cost,balanceAfter:user.balance,customerName,phone,packageName:pkg.name,cardCode:card.code,note:'بيع كرت للعميل '+customerName,createdAt:new Date().toISOString()});
       await save(state);
       return json(res,200,{ok:true,card:{code:card.code},balance:user.balance,customerName,phone,packageName:pkg.name,merchantCost:cost,customerPrice:Number(pkg.customerPrice),profit:Number(pkg.customerPrice)-cost});
     }
