@@ -98,7 +98,7 @@ export default async function handler(req,res) {
       if(await adminOk(username,password)) user={id:'admin',username,name:'مدير النظام',role:'admin',balance:0};
       else {
         const state=await load(), passwordHash=await hash(password);
-        user=state.users.find(x=>x.username===username&&x.status==='active'&&x.role==='merchant'&&x.passwordHash===passwordHash);
+        user=state.users.find(x=>x.username===username&&x.status==='active'&&(x.role==='merchant'||state.transactions.some(t=>t.userId===x.id&&t.type==='merchant-sale'))&&x.passwordHash===passwordHash);
       }
       if(!user)return json(res,401,{error:'اسم المستخدم أو كلمة المرور غير صحيحة'});
       const token=session(user);
@@ -122,10 +122,10 @@ export default async function handler(req,res) {
     if(action==='portal-data') {
       const user=state.users.find(x=>x.id===current.id);
       if(!user)return json(res,404,{error:'الحساب غير موجود'});
-      if(user.role!=='merchant'&&current.role!=='merchant')return json(res,403,{error:'لوحة العملاء غير متاحة؛ هذه البوابة مخصصة للتجار فقط.'});
       // Recovery guard: a recorded merchant sale is proof this account was configured as a merchant.
       // Restore only the role flag; never alter balance, cards, or transaction history.
       const hasMerchantSale=state.transactions.some(t=>t.userId===user.id&&t.type==='merchant-sale');
+      if(user.role!=='merchant'&&current.role!=='merchant'&&!hasMerchantSale)return json(res,403,{error:'لوحة العملاء غير متاحة؛ هذه البوابة مخصصة للتجار فقط.'});
       // Trust either the saved account role or the authenticated session role.
       // This repairs a stale/mismatched role without touching wallet or sales data.
       const isMerchant=user.role==='merchant'||current.role==='merchant'||hasMerchantSale;
