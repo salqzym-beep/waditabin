@@ -43,9 +43,7 @@ async function load() {
     if(!r.stream)throw new Error('تعذر قراءة ملف قاعدة البيانات من التخزين');
     const state=JSON.parse(await new Response(r.stream).text());
     if(!state || !Array.isArray(state.users) || !Array.isArray(state.cards))throw new Error('ملف قاعدة البيانات غير صالح');
-    const result={...fresh(),...state};
-    Object.defineProperty(result,'_etag',{value:r.blob?.etag||undefined,writable:true,configurable:true,enumerable:false});
-    return result;
+    const result={...fresh(),...state}; Object.defineProperty(result,'_etag',{value:r.blob?.etag||undefined,writable:true,configurable:true,enumerable:false}); return result;
   } catch(e) {
     if(isMissingBlob(e))return fresh();
     throw e;
@@ -53,14 +51,11 @@ async function load() {
 }
 async function save(state) {
   const write = async () => {
-    const options={
+    const result=await put(KEY,JSON.stringify(state),{
       access:'private',addRandomSuffix:false,allowOverwrite:true,
-      contentType:'application/json',token:process.env.BLOB_READ_WRITE_TOKEN
-    };
-    // Protect the shared state file from overwriting a newer version written
-    // by another Vercel function instance.
-    if(state._etag) options.ifMatch=state._etag;
-    const result=await put(KEY,JSON.stringify(state),options);
+      contentType:'application/json',token:process.env.BLOB_READ_WRITE_TOKEN,
+      ...(state._etag && process.env.BLOB_DISABLE_ETAG!=='true'?{ifMatch:state._etag}:{})
+    });
     Object.defineProperty(state,'_etag',{value:result.etag,writable:true,configurable:true,enumerable:false});
     return result;
   };
@@ -68,18 +63,9 @@ async function save(state) {
   writeQueue=task.then(()=>undefined,()=>undefined);
   await task;
 }
-async function adminOk(username,password,state) {
-  const data=state || await load();
-  const saved=data.adminCredentials;
-  const expectedUser=saved?.username || process.env.ADMIN_USERNAME || '';
-  const expectedHash=saved?.passwordHash || process.env.ADMIN_PASSWORD_HASH || '';
-  if(!expectedUser || !expectedHash || username!==expectedUser)return false;
-  return (await hash(password))===expectedHash;
-}
-async function adminPasswordOk(password,state) {
-  const saved=state.adminCredentials;
-  const expectedHash=saved?.passwordHash || process.env.ADMIN_PASSWORD_HASH || '';
-  return !!expectedHash && (await hash(password))===expectedHash;
+async function adminOk(username,password) {
+  if(username!==(process.env.ADMIN_USERNAME||'') || !process.env.ADMIN_PASSWORD_HASH)return false;
+  return (await hash(password))===process.env.ADMIN_PASSWORD_HASH;
 }
 function cleanUser(u) { const {passwordHash,...rest}=u; return rest; }
 
@@ -94,155 +80,59 @@ export default async function handler(req,res) {
   } catch { return json(res,400,{error:'بيانات غير صالحة'}); }
 
   const action=safe(body.action);
-  // Public read-only polling endpoint for the manager's WebToApp app.
-  // Keep this endpoint isolated from merchant/admin actions and session handling.
-  if(req.method==='GET' && action==='notifications-poll') {
-    const expectedKey='CGpaePlGggaL4_NQ6fJkqEir1Yqvt4E-e4IRNH1NrNU';
-    const suppliedKey=safe(body.key);
-    if(suppliedKey.length!==expectedKey.length || !crypto.timingSafeEqual(Buffer.from(suppliedKey),Buffer.from(expectedKey))) {
-      return json(res,404,{error:'غير موجود'});
-    }
-    res.setHeader('Cache-Control','no-store, max-age=0');
-    try {
-      const state=await load();
-      const cutoff=Date.now()-7*24*60*60*1000;
-      const adminUrl='https://wadi-tabin-net.vercel.app/admin.html';
-      const notices=[];
-      const recent=(state.transactions||[]).filter(t=>t.createdAt && Date.parse(t.createdAt)>=cutoff);
-
-      // Notify the manager about each recent merchant balance recharge.
-      for(const t of recent.filter(x=>x.type==='balance-credit').slice(-20)) {
-        const user=state.users.find(x=>x.id===t.userId);
-        notices.push({
-          title:'شحن رصيد تاجر',
-          body:'تم شحن رصيد '+(user?.name||user?.username||t.username||'تاجر')+' بمبلغ '+Math.abs(Number(t.amount)||0)+' ريال. الرصيد الحالي '+Number(t.balanceAfter||0)+' ريال.',
-          url:adminUrl+'?notification='+encodeURIComponent('recharge-'+t.id),
-          _at:Date.parse(t.createdAt)||0
-        });
-      }
-
-      // Notify only when a merchant balance crosses down to 3000 YER or less.
-      for(const user of state.users||[]) {
-        const history=(state.transactions||[]).filter(t=>t.userId===user.id&&t.createdAt)
-          .sort((a,b)=>Date.parse(a.createdAt)-Date.parse(b.createdAt));
-        let previous=null;
-        for(const t of history) {
-          const next=Number(t.balanceAfter);
-          if(!Number.isFinite(next)) continue;
-          const firstOpeningCredit=previous===null&&t.type==='balance-credit';
-          if(next<=3000&&(previous>3000||firstOpeningCredit)&&Date.parse(t.createdAt)>=cutoff) {
-            notices.push({
-              title:'تنبيه انخفاض رصيد التاجر',
-              body:'وصل رصيد '+(user.name||user.username||'التاجر')+' إلى '+next+' ريال.',
-              url:adminUrl+'?notification='+encodeURIComponent('low-balance-'+t.id),
-              _at:Date.parse(t.createdAt)||0
-            });
-          }
-          previous=next;
-        }
-      }
-
-      // Notify when a package has fewer than 3 available cards.
-      for(const pkg of state.packages||[]) {
-        if(pkg.active===false) continue;
-        const available=(state.cards||[]).filter(c=>c.packageId===pkg.id&&c.status==='available').length;
-        if(available<3) {
-          const latestSale=(state.cards||[]).filter(c=>c.packageId===pkg.id&&c.status==='sold')
-            .sort((a,b)=>Date.parse(b.soldAt||0)-Date.parse(a.soldAt||0))[0];
-          const eventId=latestSale?.id||('initial-'+pkg.id+'-'+available);
-          notices.push({
-            title:'تنبيه انخفاض مخزون الباقة',
-            body:'الباقة '+(pkg.name||'بدون اسم')+' متبقي منها '+available+' كرت فقط.',
-            url:adminUrl+'?notification='+encodeURIComponent('low-stock-'+eventId),
-            _at:Date.parse(latestSale?.soldAt||'')||Date.now()
-          });
-        }
-      }
-      const latest=notices.sort((a,b)=>(b._at||0)-(a._at||0)).slice(0,5).map(({title,body,url})=>({title,body,url}));
-      return json(res,200,latest);
-    } catch(e) {
-      console.error('wadi-tabin notifications poll error',e);
-      return json(res,500,{error:'تعذر تحميل الإشعارات حالياً'});
-    }
-  }
   const current=readSession(req);
   try {
-    if(action==='login'||action==='login-admin'||action==='login-merchant') {
+    if(action==='login') {
       const username=safe(body.username), password=String(body.password||'');
-      const requestedRole=action==='login-admin'?'admin':action==='login-merchant'?'merchant':'';
       let user=null;
-      if(requestedRole!=='merchant' && await adminOk(username,password)) {
-        user={id:'admin',username,name:'مدير النظام',role:'admin',balance:0};
-      } else if(requestedRole!=='admin') {
-        const data=await load(), passwordHash=await hash(password);
-        user=data.users.find(x=>x.username===username&&x.status==='active'&&(x.role==='merchant'||data.transactions.some(t=>t.userId===x.id&&t.type==='merchant-sale'))&&x.passwordHash===passwordHash);
+      if(await adminOk(username,password)) user={id:'admin',username,name:'مدير النظام',role:'admin',balance:0};
+      else {
+        const state=await load(), passwordHash=await hash(password);
+        user=state.users.find(x=>x.username===username&&x.status==='active'&&x.passwordHash===passwordHash);
       }
-      if(!user || (requestedRole && user.role!==requestedRole))return json(res,401,{error:requestedRole==='admin'?'بيانات دخول المدير غير صحيحة':'اسم المستخدم أو كلمة المرور غير صحيحة'});
+      if(!user)return json(res,401,{error:'اسم المستخدم أو كلمة المرور غير صحيحة'});
       const token=session(user);
       res.setHeader('Set-Cookie','wtn_session='+token+'; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=86400');
       return json(res,200,{ok:true,user:cleanUser(user)});
     }
     if(action==='logout') {
       res.setHeader('Set-Cookie','wtn_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0');
-      res.setHeader('Cache-Control','no-store, max-age=0');
-      if(req.method==='GET') { res.statusCode=303; res.setHeader('Location','/index.html?logged_out=1'); return res.end(); }
       return json(res,200,{ok:true});
     }
-    // All remaining API actions are stateful or authenticated and must use POST.
-    if(req.method!=='POST') {
-      res.setHeader('Allow','POST');
-      return json(res,405,{error:'طريقة الطلب غير مسموحة؛ استخدم POST'});
+    if(action==='signup') {
+      const state=await load(), username=safe(body.username), password=String(body.password||'');
+      if(!username||password.length<8||!body.proofBase64||!safe(body.name)||!safe(body.phone))return json(res,400,{error:'أكمل البيانات، وكلمة المرور 8 أحرف على الأقل، وأرفق سند الإيداع'});
+      if(state.users.some(x=>x.username===username)||state.requests.some(x=>x.username===username))return json(res,409,{error:'اسم المستخدم مستخدم مسبقاً'});
+      const bytes=Buffer.from(body.proofBase64,'base64');
+      if(!bytes.length||bytes.length>3*1024*1024)return json(res,413,{error:'السند فارغ أو أكبر من 3MB'});
+      const proof='wadi-tabin/proofs/'+id();
+      const blob=await put(proof,bytes,{access:'private',addRandomSuffix:false,contentType:body.proofType||'application/octet-stream',token:process.env.BLOB_READ_WRITE_TOKEN});
+      state.requests.push({id:id(),name:safe(body.name),phone:safe(body.phone),username,passwordHash:await hash(password),role:body.role==='merchant'?'merchant':'customer',proofUrl:blob.url,proofName:safe(body.proofName),status:'pending',createdAt:new Date().toISOString()});
+      await save(state);
+      return json(res,200,{ok:true,message:'تم إرسال الطلب للمراجعة'});
     }
-    if(action==='signup') { return json(res,403,{error:'إنشاء الحسابات يتم عن طريق إدارة الشبكة فقط'}); }
     if(!current)return json(res,401,{error:'يرجى تسجيل الدخول'});
     const state=await load();
     if(action==='admin-data'&&current.role==='admin') {
-      const userNames=new Map(state.users.map(u=>[u.id,u.username]));
-      const transactions=state.transactions.map(t=>({...t,username:t.username||userNames.get(t.userId)||'—'}));
-      return json(res,200,{ok:true,state:{...state,transactions,requests:[...state.requests].sort((a,b)=>(a.status==='pending'?-1:1)-(b.status==='pending'?-1:1)).map(cleanUser),users:state.users.map(cleanUser)}});
+      return json(res,200,{ok:true,state:{...state,requests:[...state.requests].sort((a,b)=>(a.status==='pending'?-1:1)-(b.status==='pending'?-1:1)).map(cleanUser),users:state.users.map(cleanUser)}});
     }
     if(action==='portal-data') {
       const user=state.users.find(x=>x.id===current.id);
       if(!user)return json(res,404,{error:'الحساب غير موجود'});
-      // Recovery guard: a recorded merchant sale is proof this account was configured as a merchant.
-      // Restore only the role flag; never alter balance, cards, or transaction history.
-      const hasMerchantSale=state.transactions.some(t=>t.userId===user.id&&t.type==='merchant-sale');
-      if(user.role!=='merchant'&&current.role!=='merchant'&&!hasMerchantSale)return json(res,403,{error:'لوحة العملاء غير متاحة؛ هذه البوابة مخصصة للتجار فقط.'});
-      // Trust either the saved account role or the authenticated session role.
-      // This repairs a stale/mismatched role without touching wallet or sales data.
-      const isMerchant=user.role==='merchant'||current.role==='merchant'||hasMerchantSale;
-      if(isMerchant&&user.role!=='merchant') {
-        user.role='merchant';
-        await save(state);
-      }
-      const publicUser={...cleanUser(user),role:isMerchant?'merchant':user.role};
-      return json(res,200,{ok:true,user:publicUser,isMerchant,state:{packages:state.packages,cards:state.cards.filter(c=>c.ownerId===user.id),transactions:state.transactions.filter(t=>t.userId===user.id).sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)))}});
+      return json(res,200,{ok:true,user:cleanUser(user),state:{packages:state.packages,cards:state.cards.filter(c=>c.ownerId===user.id),transactions:state.transactions.filter(t=>t.userId===user.id)}});
     }
     if(action==='admin-action'&&current.role==='admin') {
       const operation=safe(body.operation);
-      if(operation==='admin-credentials-update') {
-        const username=safe(body.username), currentPassword=String(body.currentPassword||''), newPassword=String(body.newPassword||'');
-        if(!username || !currentPassword)return json(res,400,{error:'أدخل اسم المستخدم الحالي وكلمة المرور الحالية'});
-        if(!await adminPasswordOk(currentPassword,state))return json(res,401,{error:'كلمة المرور الحالية غير صحيحة'});
-        if(newPassword && newPassword.length<8)return json(res,400,{error:'كلمة المرور الجديدة يجب ألا تقل عن 8 أحرف'});
-        const otherUser=state.users.some(u=>u.username===username);
-        if(otherUser)return json(res,409,{error:'اسم المستخدم مستخدم لحساب آخر'});
-        state.adminCredentials={username,passwordHash:await hash(newPassword||currentPassword)};
-        await save(state);
-        return json(res,200,{ok:true,message:'تم تحديث بيانات المدير'});
-      }
       if(operation==='approve'||operation==='reject') {
         const request=state.requests.find(x=>x.id===body.id&&x.status==='pending');
         if(!request)return json(res,404,{error:'الطلب غير موجود أو تمت معالجته مسبقاً'});
         if(operation==='approve') {
-          if(request.role!=='merchant')return json(res,403,{error:'طلبات العملاء غير مدعومة؛ يمكن تفعيل حسابات التجار فقط'});
           const balance=Number(body.balance??0);
           if(!Number.isFinite(balance)||balance<0)return json(res,400,{error:'الرصيد غير صحيح'});
           if(state.users.some(x=>x.username===request.username))return json(res,409,{error:'الحساب موجود مسبقاً'});
           const approvedPassword=String(body.newPassword||'');
-          if(approvedPassword.length<8)return json(res,400,{error:'عيّن كلمة مرور جديدة لا تقل عن 8 أحرف قبل التفعيل؛ لا يمكن استرجاع كلمة المرور القديمة'});
-          state.users.push({id:id(),name:request.name,phone:request.phone,username:request.username,passwordHash:await hash(approvedPassword),role:request.role,status:'active',balance,createdAt:new Date().toISOString()});
-          if(balance>0)state.transactions.push({id:id(),userId:state.users[state.users.length-1].id,type:'balance-credit',amount:balance,balanceAfter:balance,note:'رصيد افتتاحي عند تفعيل الحساب',createdAt:new Date().toISOString()});
+          if(approvedPassword && approvedPassword.length<8)return json(res,400,{error:'كلمة المرور الجديدة يجب ألا تقل عن 8 أحرف'});
+          state.users.push({id:id(),name:request.name,phone:request.phone,username:request.username,passwordHash:approvedPassword?await hash(approvedPassword):request.passwordHash,role:request.role,status:'active',balance,createdAt:new Date().toISOString()});
         }
         request.status=operation==='approve'?'approved':'rejected';
         await save(state);
@@ -252,121 +142,52 @@ export default async function handler(req,res) {
         const user=state.users.find(x=>x.id===body.id);
         if(!user)return json(res,404,{error:'الحساب غير موجود'});
         const name=safe(body.name), phone=safe(body.phone), username=safe(body.username);
-        const balance=Number(body.balance), role='merchant';
+        const balance=Number(body.balance), role=body.role==='merchant'?'merchant':'customer';
         if(!name||!username||!Number.isFinite(balance)||balance<0)return json(res,400,{error:'تحقق من الاسم واسم المستخدم والرصيد'});
         if(state.users.some(x=>x.id!==user.id&&x.username===username))return json(res,409,{error:'اسم المستخدم مستخدم لحساب آخر'});
-        const previousBalance=Number(user.balance||0); user.name=name; user.phone=phone; user.username=username; user.role=role; user.balance=balance;
-        if(balance!==previousBalance)state.transactions.push({id:id(),userId:user.id,type:balance>previousBalance?'balance-credit':'balance-debit',amount:balance-previousBalance,balanceAfter:balance,note:'تعديل رصيد بواسطة المدير',createdAt:new Date().toISOString()});
+        user.name=name; user.phone=phone; user.username=username; user.role=role; user.balance=balance;
         if(body.status==='active'||body.status==='suspended')user.status=body.status;
         const newPassword=String(body.newPassword||'');
         if(newPassword){if(newPassword.length<8)return json(res,400,{error:'كلمة المرور يجب ألا تقل عن 8 أحرف'});user.passwordHash=await hash(newPassword);}
         await save(state); return json(res,200,{ok:true});
       }
-      if(operation==='merchant-delete') {
-        const user=state.users.find(x=>x.id===body.id);
-        if(!user)return json(res,404,{error:'حساب التاجر غير موجود'});
-        if(user.role!=='merchant'&&!state.transactions.some(t=>t.userId===user.id&&t.type==='merchant-sale'))return json(res,403,{error:'هذا الحساب ليس حساب تاجر'});
-        // Full account removal: remove the merchant and their transaction history.
-        // Keep sold voucher cards as sold inventory records, but detach the deleted account.
-        state.users=state.users.filter(x=>x.id!==user.id);
-        state.transactions=state.transactions.filter(t=>t.userId!==user.id);
-        for(const card of state.cards)if(card.ownerId===user.id){delete card.ownerId;delete card.ownerName;delete card.ownerUsername;}
-        await save(state);
-        return json(res,200,{ok:true,message:'تم حذف حساب التاجر وسجل حركاته'});
-      }
-      if(operation==='transactions-clear-user') {
-        const userId=safe(body.id);
-        if(!userId)return json(res,400,{error:'معرّف التاجر غير صحيح'});
-        const count=state.transactions.filter(t=>t.userId===userId).length;
-        state.transactions=state.transactions.filter(t=>t.userId!==userId);
-        await save(state);
-        return json(res,200,{ok:true,deleted:count});
-      }
-      if(operation==='package-cards-clear') {
-        const packageId=safe(body.id);
-        const pkg=state.packages.find(x=>x.id===packageId);
-        if(!pkg)return json(res,404,{error:'الباقة غير موجودة'});
-        const before=state.cards.length;
-        state.cards=state.cards.filter(card=>card.packageId!==packageId);
-        const deleted=before-state.cards.length;
-        await save(state);
-        return json(res,200,{ok:true,deleted,packageName:pkg.name});
-      }
-      if(operation==='transactions-clear') {
-        const count=state.transactions.length;state.transactions=[];await save(state);
-        return json(res,200,{ok:true,deleted:count});
-      }
       if(operation==='create-user') {
         const username=safe(body.username), password=String(body.password||''), balance=Number(body.balance||0);
-        if(body.role==='customer')return json(res,403,{error:'إنشاء حسابات العملاء غير متاح؛ أنشئ حساب تاجر فقط'});
         if(!username||password.length<8||!safe(body.name)||!Number.isFinite(balance)||balance<0)return json(res,400,{error:'تحقق من البيانات وكلمة المرور والرصيد'});
         if(state.users.some(x=>x.username===username)||state.requests.some(x=>x.username===username))return json(res,409,{error:'اسم المستخدم موجود'});
-        const createdUser={id:id(),name:safe(body.name),phone:safe(body.phone),username,passwordHash:await hash(password),role:body.role==='merchant'?'merchant':'customer',status:'active',balance,createdAt:new Date().toISOString()}; state.users.push(createdUser); if(balance>0)state.transactions.push({id:id(),userId:createdUser.id,type:'balance-credit',amount:balance,balanceAfter:balance,note:'رصيد افتتاحي عند إنشاء الحساب',createdAt:new Date().toISOString()});
+        state.users.push({id:id(),name:safe(body.name),phone:safe(body.phone),username,passwordHash:await hash(password),role:body.role==='merchant'?'merchant':'customer',status:'active',balance,createdAt:new Date().toISOString()});
         await save(state); return json(res,200,{ok:true});
       }
       if(operation==='package-create') {
         const customerPrice=Number(body.customerPrice), merchantPrice=Number(body.merchantPrice);
         if(!safe(body.name)||!Number.isFinite(customerPrice)||!Number.isFinite(merchantPrice)||customerPrice<0||merchantPrice<0)return json(res,400,{error:'بيانات الباقة أو الأسعار غير صحيحة'});
-        state.packages.push({id:id(),name:safe(body.name),customerPrice,merchantPrice,validity:safe(body.validity),size:safe(body.size),active:true});
+        state.packages.push({id:id(),name:safe(body.name),customerPrice,merchantPrice,active:true});
         await save(state); return json(res,200,{ok:true});
-      }
-      if(operation==='balance-adjust') {
-        const user=state.users.find(x=>x.id===body.id);
-        const amount=Number(body.amount), direction=body.direction==='debit'?'debit':'credit', note=safe(body.note)||'تعديل رصيد بواسطة المدير';
-        if(!user)return json(res,404,{error:'الحساب غير موجود'});
-        if(!Number.isFinite(amount)||amount<=0)return json(res,400,{error:'أدخل مبلغاً صحيحاً أكبر من صفر'});
-        const previous=Number(user.balance||0), delta=direction==='credit'?amount:-amount, next=previous+delta;
-        if(next<0)return json(res,400,{error:'لا يمكن أن يصبح الرصيد بالسالب'});
-        user.balance=next;
-        state.transactions.push({id:id(),userId:user.id,type:direction==='credit'?'balance-credit':'balance-debit',amount:delta,balanceAfter:next,note,createdAt:new Date().toISOString()});
-        await save(state);return json(res,200,{ok:true,balance:next});
-      }
-      if(operation==='package-update') {
-        const pkg=state.packages.find(x=>x.id===body.id);
-        if(!pkg)return json(res,404,{error:'الباقة غير موجودة'});
-        const name=safe(body.name), customerPrice=Number(body.customerPrice), merchantPrice=Number(body.merchantPrice);
-        if(!name||!Number.isFinite(customerPrice)||!Number.isFinite(merchantPrice)||customerPrice<0||merchantPrice<0)return json(res,400,{error:'تحقق من اسم الباقة وأسعارها'});
-        pkg.name=name;pkg.customerPrice=customerPrice;pkg.merchantPrice=merchantPrice;pkg.validity=safe(body.validity);pkg.size=safe(body.size);
-        if(body.active==='true'||body.active===true)pkg.active=true;
-        if(body.active==='false'||body.active===false)pkg.active=false;
-        await save(state);return json(res,200,{ok:true});
-      }
-      if(operation==='package-delete') {
-        const pkg=state.packages.find(x=>x.id===body.id);
-        if(!pkg)return json(res,404,{error:'الباقة غير موجودة'});
-        if(state.cards.some(x=>x.packageId===pkg.id))return json(res,409,{error:'لا يمكن حذف باقة مرتبطة بكروت أو سجل سابق. يمكنك إيقافها من التعديل بدلاً من حذفها.'});
-        state.packages=state.packages.filter(x=>x.id!==pkg.id);
-        await save(state);return json(res,200,{ok:true});
       }
       if(operation==='stock-add') {
         const pkg=state.packages.find(x=>x.id===body.packageId);
         if(!pkg)return json(res,400,{error:'اختر باقة صحيحة'});
-        const codes=String(body.codes||'').split(/[\n,;\t ]+/).map(safe).filter(Boolean);
-        if(!codes.length)return json(res,400,{error:'اكتب الأكواد أولاً'});
-        if(codes.length>5000)return json(res,413,{error:'الحد الأقصى 5000 كرت في العملية الواحدة'});
-        const seen=new Set(state.cards.map(c=>String(c.code).toUpperCase()));let added=0,duplicates=0;
-        for(const code of codes){const key=code.toUpperCase();if(seen.has(key)){duplicates++;continue;}seen.add(key);state.cards.push({id:id(),code,packageId:pkg.id,status:'available'});added++;}
-        if(!added)return json(res,400,{error:'كل الأكواد مكررة؛ لم تتم إضافة أي كرت'});
-        await save(state);return json(res,200,{ok:true,added,duplicates,packageName:pkg.name});
+        const codes=String(body.codes||'').split(/[\n,;]+/).map(safe).filter(Boolean);
+        const seen=new Set(state.cards.map(c=>c.code)); let added=0,duplicates=0;
+        for(const code of codes){if(seen.has(code)){duplicates++;continue;}seen.add(code);state.cards.push({id:id(),code,packageId:pkg.id,status:'available'});added++;}
+        if(!added)return json(res,400,{error:'لم تتم إضافة كروت جديدة؛ تحقق من الأكواد أو التكرار'});
+        await save(state); return json(res,200,{ok:true,added,duplicates});
       }
       return json(res,400,{error:'عملية المدير غير مدعومة'});
     }
-    if(action==='purchase') { return json(res,403,{error:'شراء العملاء غير متاح في هذه النسخة؛ البوابة مخصصة للتجار.'}); }
+    if(action==='purchase') {
+      if(current.role!=='customer')return json(res,403,{error:'هذه العملية للعملاء'});
+      const user=state.users.find(x=>x.id===current.id), pkg=state.packages.find(x=>x.id===body.packageId&&x.active), card=state.cards.find(x=>x.packageId===body.packageId&&x.status==='available');
+      if(!user||!pkg||!card)return json(res,400,{error:'الباقة أو المخزون غير متاح'});
+      const price=Number(pkg.customerPrice);
+      if(!Number.isFinite(price)||price<0||user.balance<price)return json(res,400,{error:'الرصيد غير كافٍ أو سعر الباقة غير صحيح'});
+      user.balance-=price; card.status='sold'; card.ownerId=user.id;
+      state.transactions.push({id:id(),userId:user.id,type:'purchase',amount:-price,createdAt:new Date().toISOString()});
+      await save(state); return json(res,200,{ok:true,card:{code:card.code},balance:user.balance});
+    }
     if(action==='merchant-sale') {
-      const user=state.users.find(x=>x.id===current.id);
-      if(!user||user.role!=='merchant')return json(res,403,{error:'هذا الحساب غير مفعّل كتاجر. حدّث الصفحة بعد تعديل نوع الحساب من لوحة المدير.'});
-      const customerName=safe(body.customerName), phone=safe(body.phone), packageId=safe(body.packageId);
-      const pkg=state.packages.find(x=>x.id===packageId&&x.active!==false);
-      const card=state.cards.find(c=>c.packageId===packageId&&c.status==='available');
-      if(!user||!customerName||!phone||!pkg)return json(res,400,{error:'أدخل اسم العميل ورقم جواله واختر الباقة'});
-      if(!card)return json(res,400,{error:'لا توجد كروت متاحة لهذه الباقة'});
-      const cost=Number(pkg.merchantPrice);
-      if(!Number.isFinite(cost)||cost<0||Number(user.balance)<cost)return json(res,400,{error:'رصيد التاجر غير كافٍ'});
-      user.balance=Number(user.balance)-cost;
-      card.status='sold';card.ownerId=user.id;card.customerName=customerName;card.customerPhone=phone;card.soldAt=new Date().toISOString();
-      state.transactions.push({id:id(),userId:user.id,type:'merchant-sale',amount:-cost,balanceAfter:user.balance,customerName,phone,packageName:pkg.name,cardCode:card.code,note:'بيع كرت للعميل '+customerName,createdAt:new Date().toISOString()});
-      await save(state);
-      return json(res,200,{ok:true,card:{code:card.code},balance:user.balance,customerName,phone,packageName:pkg.name,merchantCost:cost,customerPrice:Number(pkg.customerPrice),profit:Number(pkg.customerPrice)-cost});
+      if(current.role!=='merchant')return json(res,403,{error:'هذه العملية للتجار'});
+      return json(res,501,{error:'بيع التاجر لم يكتمل بعد؛ لم يتم خصم أي رصيد'});
     }
     return json(res,400,{error:'عملية غير معروفة'});
   } catch(e) {
