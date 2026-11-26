@@ -142,7 +142,7 @@ export default async function handler(req,res) {
       const operation=safe(body.operation);
       if(operation==='login-ad-image-upload') {
         const data=String(body.imageData||''),comma=data.indexOf(','),header=data.slice(0,comma),mime=header.slice(5),payload=data.slice(comma+1);if(comma<0||!['image/jpeg','image/png','image/webp'].includes(mime)||!header.endsWith(';base64')||!/^[A-Za-z0-9+/=]+$/.test(payload))return json(res,400,{error:'صيغة الصورة غير صحيحة'});
-        if(!match)return json(res,400,{error:'صيغة الصورة غير صحيحة'});
+        
         const bytes=Buffer.from(payload,'base64');
         if(!bytes.length||bytes.length>3*1024*1024)return json(res,400,{error:'حجم الصورة يجب ألا يتجاوز 3 ميجابايت'});
         const ext=mime==='image/jpeg'?'jpg':mime.split('/')[1];
