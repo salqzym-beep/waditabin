@@ -83,6 +83,8 @@ export default async function handler(req,res) {
   if(req.method==='GET' && req.query?.action==='health') {
     return json(res,200,{ok:true,storage:!!process.env.BLOB_READ_WRITE_TOKEN,db:'private-blob',sessionConfigured:!!process.env.SESSION_SECRET && process.env.SESSION_SECRET.length>=32,adminConfigured:!!process.env.ADMIN_USERNAME && !!process.env.ADMIN_PASSWORD_HASH});
   }
+  if(req.method==='GET' && req.query?.action==='login-ad') {try{const state=await load();const ad=state.loginAdvertisement||{};return json(res,200,{text:ad.text||'',phone:ad.phone||'',imagePath:ad.imagePath||''})}catch(e){return json(res,500,{error:'تعذر تحميل الإعلان'})}}
+  if(req.method==='GET' && req.query?.action==='login-ad-image') {try{const state=await load();const ad=state.loginAdvertisement||{};if(!ad.imagePath)return json(res,404,{error:'لا توجد صورة'});const blob=await get(ad.imagePath,{access:'private',token:process.env.BLOB_READ_WRITE_TOKEN,useCache:false});if(!blob?.stream)return json(res,404,{error:'الصورة غير موجودة'});const bytes=Buffer.from(await new Response(blob.stream).arrayBuffer());res.statusCode=200;res.setHeader('Content-Type',ad.imageType||'image/jpeg');res.setHeader('Cache-Control','public, max-age=300');res.setHeader('Content-Length',bytes.length);return res.end(bytes)}catch(e){return json(res,404,{error:'تعذر عرض الصورة'})}}
   let body={};
   try {
     if(req.method==='POST') body=typeof req.body==='object'&&req.body?req.body:JSON.parse(await new Promise((resolve,reject)=>{let raw='';req.on('data',c=>raw+=c);req.on('end',()=>resolve(raw));req.on('error',reject)}));
