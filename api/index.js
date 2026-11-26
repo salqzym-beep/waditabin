@@ -53,10 +53,14 @@ async function load() {
 }
 async function save(state) {
   const write = async () => {
-    const result=await put(KEY,JSON.stringify(state),{
+    const options={
       access:'private',addRandomSuffix:false,allowOverwrite:true,
       contentType:'application/json',token:process.env.BLOB_READ_WRITE_TOKEN
-    });
+    };
+    // Protect the shared state file from overwriting a newer version written
+    // by another Vercel function instance.
+    if(state._etag) options.ifMatch=state._etag;
+    const result=await put(KEY,JSON.stringify(state),options);
     Object.defineProperty(state,'_etag',{value:result.etag,writable:true,configurable:true,enumerable:false});
     return result;
   };
@@ -158,7 +162,7 @@ export default async function handler(req,res) {
       return json(res,200,latest);
     } catch(e) {
       console.error('wadi-tabin notifications poll error',e);
-      return json(res,200,[]);
+      return json(res,500,{error:'تعذر تحميل الإشعارات حالياً'});
     }
   }
   const current=readSession(req);
@@ -183,6 +187,11 @@ export default async function handler(req,res) {
       res.setHeader('Cache-Control','no-store, max-age=0');
       if(req.method==='GET') { res.statusCode=303; res.setHeader('Location','/index.html?logged_out=1'); return res.end(); }
       return json(res,200,{ok:true});
+    }
+    // All remaining API actions are stateful or authenticated and must use POST.
+    if(req.method!=='POST') {
+      res.setHeader('Allow','POST');
+      return json(res,405,{error:'طريقة الطلب غير مسموحة؛ استخدم POST'});
     }
     if(action==='signup') { return json(res,403,{error:'إنشاء الحسابات يتم عن طريق إدارة الشبكة فقط'}); }
     if(!current)return json(res,401,{error:'يرجى تسجيل الدخول'});
