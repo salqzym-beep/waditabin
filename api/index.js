@@ -164,15 +164,20 @@ export default async function handler(req,res) {
     if(action==='admin-action'&&current.role==='admin') {
       const operation=safe(body.operation || body.action);
       if(operation==='admin-credentials-update') {
+        const currentUsername=safe(body.currentUsername), savedUsername=state.adminCredentials?.username || process.env.ADMIN_USERNAME || '';
         const username=safe(body.username), currentPassword=String(body.currentPassword||''), newPassword=String(body.newPassword||'');
-        if(!username || !currentPassword)return json(res,400,{error:'أدخل اسم المستخدم الحالي وكلمة المرور الحالية'});
+        if(!currentUsername || !currentPassword || !username || !newPassword)return json(res,400,{error:'أكمل اسم المستخدم الحالي وكلمة المرور الحالية والبيانات الجديدة'});
+        if(currentUsername!==savedUsername || currentUsername!==safe(current.username))return json(res,401,{error:'اسم المستخدم الحالي غير صحيح'});
         if(!await adminPasswordOk(currentPassword,state))return json(res,401,{error:'كلمة المرور الحالية غير صحيحة'});
-        if(newPassword && newPassword.length<8)return json(res,400,{error:'كلمة المرور الجديدة يجب ألا تقل عن 8 أحرف'});
+        if(newPassword.length<8)return json(res,400,{error:'كلمة المرور الجديدة يجب ألا تقل عن 8 أحرف'});
+        if(username.length<3)return json(res,400,{error:'اسم المستخدم الجديد يجب ألا يقل عن 3 أحرف'});
         const otherUser=state.users.some(u=>u.username===username);
-        if(otherUser)return json(res,409,{error:'اسم المستخدم مستخدم لحساب آخر'});
-        state.adminCredentials={username,passwordHash:await hash(newPassword||currentPassword)};
+        if(otherUser)return json(res,409,{error:'اسم المستخدم مستخدم لحساب تاجر'});
+        state.adminCredentials={username,passwordHash:await hash(newPassword)};
         await save(state);
-        return json(res,200,{ok:true,message:'تم تحديث بيانات المدير'});
+        const token=session({id:'admin',username,name:'مدير النظام',role:'admin',balance:0});
+        res.setHeader('Set-Cookie','wtn_session='+token+'; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=86400');
+        return json(res,200,{ok:true,message:'تم استبدال بيانات المدير وإلغاء القديمة'});
       }
       if(operation==='approve'||operation==='reject') {
         const request=state.requests.find(x=>x.id===body.id&&x.status==='pending');
