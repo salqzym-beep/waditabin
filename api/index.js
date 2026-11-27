@@ -162,7 +162,7 @@ export default async function handler(req,res) {
       return json(res,200,{ok:true,user:publicUser,isMerchant,state:{packages:state.packages,cards:merchantCards,transactions:merchantTransactions.sort((a,b)=>String(b.createdAt||'').localeCompare(String(a.createdAt||'')))}});
     }
     if(action==='admin-action'&&current.role==='admin') {
-      const operation=safe(body.operation);
+      const operation=safe(body.operation || body.action);
       if(operation==='admin-credentials-update') {
         const username=safe(body.username), currentPassword=String(body.currentPassword||''), newPassword=String(body.newPassword||'');
         if(!username || !currentPassword)return json(res,400,{error:'أدخل اسم المستخدم الحالي وكلمة المرور الحالية'});
@@ -267,10 +267,13 @@ export default async function handler(req,res) {
       }
       if(operation==='package-delete') {
         const pkg=state.packages.find(x=>x.id===body.id);
-        if(!pkg)return json(res,404,{error:'الباقة غير موجودة'});
-        if(state.cards.some(x=>x.packageId===pkg.id))return json(res,409,{error:'لا يمكن حذف باقة مرتبطة بكروت أو سجل سابق. يمكنك إيقافها من التعديل بدلاً من حذفها.'});
+        if(!pkg)return json(res,404,{error:'الباقة غير موجودة أو سبق حذفها'});
+        const linkedCards=state.cards.filter(x=>x.packageId===pkg.id);
+        // Remove this package and its stock cards together. Historical transactions are deliberately retained.
+        state.cards=state.cards.filter(x=>x.packageId!==pkg.id);
         state.packages=state.packages.filter(x=>x.id!==pkg.id);
-        await save(state);return json(res,200,{ok:true});
+        await save(state);
+        return json(res,200,{ok:true,deletedPackage:1,deletedCards:linkedCards.length,historyPreserved:true});
       }
       if(operation==='stock-add') {
         const pkg=state.packages.find(x=>x.id===body.packageId);
