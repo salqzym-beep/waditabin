@@ -230,6 +230,14 @@ export default async function handler(req,res) {
         state.transactions=state.transactions.filter(x=>x.id!==body.id);
         await save(state);return json(res,200,{ok:true,deleted:1});
       }
+      if(operation==='card-delete') {
+        const card=state.cards.find(x=>x.id===body.id);
+        if(!card)return json(res,404,{error:'الكرت غير موجود أو سبق حذفه'});
+        if(card.status!=='available')return json(res,409,{error:'لا يمكن حذف كرت مسحوب حفاظاً على سجل البيع. يمكن حذف الكروت المتبقية فقط.'});
+        state.cards=state.cards.filter(x=>x.id!==card.id);
+        await save(state);
+        return json(res,200,{ok:true,deleted:1});
+      }
       if(operation==='package-create') {
         const customerPrice=Number(body.customerPrice), merchantPrice=Number(body.merchantPrice);
         if(!safe(body.name)||!Number.isFinite(customerPrice)||!Number.isFinite(merchantPrice)||customerPrice<0||merchantPrice<0)return json(res,400,{error:'بيانات الباقة أو الأسعار غير صحيحة'});
