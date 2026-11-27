@@ -162,22 +162,17 @@ export default async function handler(req,res) {
       return json(res,200,{ok:true,user:publicUser,isMerchant,state:{packages:state.packages,cards:merchantCards,transactions:merchantTransactions.sort((a,b)=>String(b.createdAt||'').localeCompare(String(a.createdAt||'')))}});
     }
     if(action==='admin-action'&&current.role==='admin') {
-      const operation=safe(body.operation || body.action);
+      const operation=safe(body.operation);
       if(operation==='admin-credentials-update') {
-        const currentUsername=safe(body.currentUsername), savedUsername=state.adminCredentials?.username || process.env.ADMIN_USERNAME || '';
         const username=safe(body.username), currentPassword=String(body.currentPassword||''), newPassword=String(body.newPassword||'');
-        if(!currentUsername || !currentPassword || !username || !newPassword)return json(res,400,{error:'أكمل اسم المستخدم الحالي وكلمة المرور الحالية والبيانات الجديدة'});
-        if(currentUsername!==savedUsername || currentUsername!==safe(current.username))return json(res,401,{error:'اسم المستخدم الحالي غير صحيح'});
+        if(!username || !currentPassword)return json(res,400,{error:'أدخل اسم المستخدم الحالي وكلمة المرور الحالية'});
         if(!await adminPasswordOk(currentPassword,state))return json(res,401,{error:'كلمة المرور الحالية غير صحيحة'});
-        if(newPassword.length<8)return json(res,400,{error:'كلمة المرور الجديدة يجب ألا تقل عن 8 أحرف'});
-        if(username.length<3)return json(res,400,{error:'اسم المستخدم الجديد يجب ألا يقل عن 3 أحرف'});
+        if(newPassword && newPassword.length<8)return json(res,400,{error:'كلمة المرور الجديدة يجب ألا تقل عن 8 أحرف'});
         const otherUser=state.users.some(u=>u.username===username);
-        if(otherUser)return json(res,409,{error:'اسم المستخدم مستخدم لحساب تاجر'});
-        state.adminCredentials={username,passwordHash:await hash(newPassword)};
+        if(otherUser)return json(res,409,{error:'اسم المستخدم مستخدم لحساب آخر'});
+        state.adminCredentials={username,passwordHash:await hash(newPassword||currentPassword)};
         await save(state);
-        const token=session({id:'admin',username,name:'مدير النظام',role:'admin',balance:0});
-        res.setHeader('Set-Cookie','wtn_session='+token+'; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=86400');
-        return json(res,200,{ok:true,message:'تم استبدال بيانات المدير وإلغاء القديمة'});
+        return json(res,200,{ok:true,message:'تم تحديث بيانات المدير'});
       }
       if(operation==='approve'||operation==='reject') {
         const request=state.requests.find(x=>x.id===body.id&&x.status==='pending');
@@ -235,18 +230,10 @@ export default async function handler(req,res) {
         state.transactions=state.transactions.filter(x=>x.id!==body.id);
         await save(state);return json(res,200,{ok:true,deleted:1});
       }
-      if(operation==='card-delete') {
-        const card=state.cards.find(x=>x.id===body.id);
-        if(!card)return json(res,404,{error:'الكرت غير موجود أو سبق حذفه'});
-        // Deleting a sold card removes it from stock views; transaction history remains intact.
-        state.cards=state.cards.filter(x=>x.id!==card.id);
-        await save(state);
-        return json(res,200,{ok:true,deleted:1});
-      }
       if(operation==='package-create') {
         const customerPrice=Number(body.customerPrice), merchantPrice=Number(body.merchantPrice);
         if(!safe(body.name)||!Number.isFinite(customerPrice)||!Number.isFinite(merchantPrice)||customerPrice<0||merchantPrice<0)return json(res,400,{error:'بيانات الباقة أو الأسعار غير صحيحة'});
-        state.packages.push({id:id(),name:safe(body.name),customerPrice,merchantPrice,validity:safe(body.validity),size:safe(body.size),active:true});
+        state.packages.push({id:id(),name:safe(body.name),customerPrice,merchantPrice,active:true});
         await save(state); return json(res,200,{ok:true});
       }
       if(operation==='balance-adjust') {
@@ -265,20 +252,17 @@ export default async function handler(req,res) {
         if(!pkg)return json(res,404,{error:'الباقة غير موجودة'});
         const name=safe(body.name), customerPrice=Number(body.customerPrice), merchantPrice=Number(body.merchantPrice);
         if(!name||!Number.isFinite(customerPrice)||!Number.isFinite(merchantPrice)||customerPrice<0||merchantPrice<0)return json(res,400,{error:'تحقق من اسم الباقة وأسعارها'});
-        pkg.name=name;pkg.customerPrice=customerPrice;pkg.merchantPrice=merchantPrice;pkg.validity=safe(body.validity);pkg.size=safe(body.size);
+        pkg.name=name;pkg.customerPrice=customerPrice;pkg.merchantPrice=merchantPrice;
         if(body.active==='true'||body.active===true)pkg.active=true;
         if(body.active==='false'||body.active===false)pkg.active=false;
         await save(state);return json(res,200,{ok:true});
       }
       if(operation==='package-delete') {
         const pkg=state.packages.find(x=>x.id===body.id);
-        if(!pkg)return json(res,404,{error:'الباقة غير موجودة أو سبق حذفها'});
-        const linkedCards=state.cards.filter(x=>x.packageId===pkg.id);
-        // Remove this package and its stock cards together. Historical transactions are deliberately retained.
-        state.cards=state.cards.filter(x=>x.packageId!==pkg.id);
+        if(!pkg)return json(res,404,{error:'الباقة غير موجودة'});
+        if(state.cards.some(x=>x.packageId===pkg.id))return json(res,409,{error:'لا يمكن حذف باقة مرتبطة بكروت أو سجل سابق. يمكنك إيقافها من التعديل بدلاً من حذفها.'});
         state.packages=state.packages.filter(x=>x.id!==pkg.id);
-        await save(state);
-        return json(res,200,{ok:true,deletedPackage:1,deletedCards:linkedCards.length,historyPreserved:true});
+        await save(state);return json(res,200,{ok:true});
       }
       if(operation==='stock-add') {
         const pkg=state.packages.find(x=>x.id===body.packageId);
