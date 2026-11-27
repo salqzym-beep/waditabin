@@ -236,12 +236,31 @@ export default async function handler(req,res) {
         await save(state);return json(res,200,{ok:true,deleted:1});
       }
       if(operation==='card-delete') {
-        const card=state.cards.find(x=>x.id===body.id);
-        if(!card)return json(res,404,{error:'الكرت غير موجود أو سبق حذفه'});
-        // Deleting a sold card removes it from stock views; transaction history remains intact.
-        state.cards=state.cards.filter(x=>x.id!==card.id);
+        // Older imported cards may not have an id. Prefer id, then fall back
+        // to the unique card code (and packageId when supplied).
+        const wantedId=safe(body.id);
+        const wantedCode=safe(body.code).toUpperCase();
+        const wantedPackage=safe(body.packageId);
+        let index=state.cards.findIndex(x=>wantedId && safe(x.id)===wantedId);
+        if(index<0 && wantedCode) {
+          index=state.cards.findIndex(x=>
+            safe(x.code).toUpperCase()===wantedCode &&
+            (!wantedPackage || safe(x.packageId)===wantedPackage)
+          );
+        }
+        if(index<0)return json(res,404,{error:'الكرت غير موجود أو سبق حذفه؛ حدّث الصفحة وتحقق من رقم الكرت'});
+        const [deletedCard]=state.cards.splice(index,1);
         await save(state);
-        return json(res,200,{ok:true,deleted:1});
+        // Read back from Blob so the API does not report success unless the
+        // deletion is visible in the persisted database.
+        const check=await load();
+        const stillExists=check.cards.some(x=>
+          (deletedCard.id && safe(x.id)===safe(deletedCard.id)) ||
+          (!deletedCard.id && safe(x.code).toUpperCase()===safe(deletedCard.code).toUpperCase() &&
+           safe(x.packageId)===safe(deletedCard.packageId))
+        );
+        if(stillExists)throw new Error('لم يتأكد حفظ حذف الكرت في التخزين');
+        return json(res,200,{ok:true,deleted:1,code:deletedCard.code});
       }
       if(operation==='package-create') {
         const customerPrice=Number(body.customerPrice), merchantPrice=Number(body.merchantPrice);
